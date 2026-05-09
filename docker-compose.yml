@@ -1,0 +1,21 @@
+services:
+  ha-95598:
+    env_file:
+      - .env
+    build:
+      context: .
+    image: ha-95598
+
+    container_name: ha-95598
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - SET_CONTAINER_TIMEZONE=true
+      - CONTAINER_TIMEZONE=Asia/Shanghai
+      # - LOG_LEVEL=DEBUG
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+    init: true

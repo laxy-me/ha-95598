@@ -1,0 +1,77 @@
+FROM python:3.12.11-slim-bookworm
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV SET_CONTAINER_TIMEZONE=true
+ENV CONTAINER_TIMEZONE=Asia/Shanghai
+ENV TZ=Asia/Shanghai
+
+
+ARG TARGETARCH
+ARG VERSION
+ARG APT_MIRROR=mirrors.tuna.tsinghua.edu.cn
+ARG APT_SCHEME=https
+ARG APT_FALLBACK_MIRROR=deb.debian.org
+ARG APT_FALLBACK_SCHEME=https
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ENV VERSION=${VERSION}
+ENV PYTHON_IN_DOCKER='PYTHON_IN_DOCKER'
+
+WORKDIR /app
+
+RUN set -eux; \
+    rewrite_sources() { \
+        src="$1"; \
+        dst="$2"; \
+        if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+            sed -i "s|$src|$dst|g" /etc/apt/sources.list.d/debian.sources; \
+        fi; \
+        if [ -f /etc/apt/sources.list ]; then \
+            sed -i "s|$src|$dst|g" /etc/apt/sources.list; \
+        fi; \
+    }; \
+    primary_src="http://deb.debian.org"; \
+    primary_security_src="http://security.debian.org"; \
+    primary_dst="${APT_SCHEME}://${APT_MIRROR}"; \
+    fallback_dst="${APT_FALLBACK_SCHEME}://${APT_FALLBACK_MIRROR}"; \
+    rewrite_sources "$primary_src" "$primary_dst"; \
+    rewrite_sources "$primary_security_src" "$primary_dst"; \
+    if ! (apt-get --allow-releaseinfo-change update && apt-get install -y --no-install-recommends chromium chromium-driver fonts-noto-cjk tzdata xauth xvfb); then \
+        echo "Primary apt mirror failed, falling back to ${fallback_dst}" >&2; \
+        rewrite_sources "$primary_dst" "$fallback_dst"; \
+        apt-get --allow-releaseinfo-change update; \
+        apt-get install -y --no-install-recommends chromium chromium-driver fonts-noto-cjk tzdata xauth xvfb; \
+    fi; \
+    ln -snf /usr/share/zoneinfo/$TZ /etc/localtime; \
+    echo $TZ > /etc/timezone; \
+    dpkg-reconfigure --frontend noninteractive tzdata; \
+    rm -rf /var/lib/apt/lists/*; \
+    apt-get clean
+
+COPY requirements.txt /tmp/requirements.txt
+
+RUN cd /tmp \
+    && python3 -m pip install --upgrade pip \
+    && PIP_ROOT_USER_ACTION=ignore pip install \
+    --disable-pip-version-check \
+    --no-cache-dir \
+    --retries 10 \
+    --timeout 120 \
+    --index-url "${PIP_INDEX_URL}" \
+    --trusted-host "${PIP_TRUSTED_HOST}" \
+    -r requirements.txt \
+    && rm -rf /tmp/* \
+    && pip cache purge \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /var/log/*
+
+ENV LANG=C.UTF-8
+
+RUN mkdir -p /app/data
+
+COPY scripts /app/scripts
+COPY captcha_solver /app/captcha_solver
+COPY config /app/config
+
+CMD ["xvfb-run", "-a", "--server-args=-screen 0 1920x1080x24", "python3", "-m", "scripts.main"]

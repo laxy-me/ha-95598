@@ -1,0 +1,59 @@
+# Local environment
+.env
+.env.*
+.venv/
+.venv-test/
+env/
+venv/
+ENV/
+.python-version
+
+# Editor / tooling
+.codex
+.idea/
+.vscode/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+site/
+.eggs/
+*.egg-info/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test / coverage artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.hypothesis/
+.devcontainer
+
+# OS / temporary files
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.tmp
+
+# Project-local scratch files
+scripts/debug_fetch.py
+config/tou_price_config.local.json
+
+# Runtime data
+data/*

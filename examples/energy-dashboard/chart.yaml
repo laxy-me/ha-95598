@@ -1,0 +1,96 @@
+type: custom:apexcharts-card
+card_mod:
+  style: |
+    ha-card .wrapper.with-header > * {
+      min-width: 0;
+      min-height: 0;
+    }
+header:
+  show: true
+  title: 每日电费与用电量
+  show_states: true
+graph_span: 30d
+apex_config:
+  chart:
+    height: 240
+    toolbar:
+      show: false
+    background: transparent
+  stroke:
+    curve: smooth
+    width: 2
+  fill:
+    type: gradient
+    gradient:
+      shadeIntensity: 0
+      opacityFrom: 0.6
+      opacityTo: 0.4
+  legend:
+    show: true
+  xaxis:
+    type: datetime
+    tooltip:
+      enabled: false
+    labels:
+      datetimeUTC: false
+      format: MM/dd
+  yaxis:
+    - id: charge
+      opposite: false
+      decimalsInFloat: 2
+      title:
+        text: 元
+      labels:
+        formatter: |
+          EVAL:function(value) { return value.toFixed(2); }
+    - id: usage
+      opposite: true
+      decimalsInFloat: 2
+      title:
+        text: kWh
+      labels:
+        formatter: |
+          EVAL:function(value) { return value.toFixed(2); }
+  tooltip:
+    theme: light
+    x:
+      show: true
+      format: MM-dd
+    "y":
+      formatter: |
+        EVAL:function(value, { seriesIndex }) {
+          return seriesIndex === 0
+            ? value.toFixed(2) + ' 元'
+            : value.toFixed(2) + ' kWh';
+        }
+series:
+  - entity: sensor.daily_electricity_history_xxxx
+    name: 电费
+    unit: 元
+    type: area
+    color: "#34C759"
+    yaxis_id: charge
+    float_precision: 2
+    show:
+      legend_value: false
+    extend_to: end
+    data_generator: |
+      return (entity.attributes.series || []).map((item) => [
+        new Date(item.date + "T00:00:00").getTime(),
+        item.charge
+      ]);
+  - entity: sensor.daily_electricity_history_xxxx
+    name: 用电量
+    unit: kWh
+    type: line
+    color: "#007AFF"
+    yaxis_id: usage
+    float_precision: 2
+    show:
+      legend_value: false
+    extend_to: end
+    data_generator: |
+      return (entity.attributes.series || []).map((item) => [
+        new Date(item.date + "T00:00:00").getTime(),
+        item.usage
+      ]);

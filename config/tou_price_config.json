@@ -1,0 +1,78 @@
+{
+  "versions": [
+    {
+      "version": "hunan_residential_ladder_example",
+      "validfrom": "2025-01-01",
+      "validuntil": "2099-12-31",
+      "season_rules": [
+        {
+          "name": "spring_autumn",
+          "months": [3, 4, 5, 9, 10, 11],
+          "tiers": [
+            {
+              "up_to": 200,
+              "rates": {
+                "valley": 0.588,
+                "flat": 0.588,
+                "peak": 0.588,
+                "tip": 0.588
+              }
+            },
+            {
+              "up_to": 350,
+              "rates": {
+                "valley": 0.638,
+                "flat": 0.638,
+                "peak": 0.638,
+                "tip": 0.638
+              }
+            },
+            {
+              "up_to": null,
+              "rates": {
+                "valley": 0.888,
+                "flat": 0.888,
+                "peak": 0.888,
+                "tip": 0.888
+              }
+            }
+          ]
+        },
+        {
+          "name": "winter_summer",
+          "months": [1, 2, 6, 7, 8, 12],
+          "tiers": [
+            {
+              "up_to": 200,
+              "rates": {
+                "valley": 0.588,
+                "flat": 0.588,
+                "peak": 0.588,
+                "tip": 0.588
+              }
+            },
+            {
+              "up_to": 450,
+              "rates": {
+                "valley": 0.638,
+                "flat": 0.638,
+                "peak": 0.638,
+                "tip": 0.638
+              }
+            },
+            {
+              "up_to": null,
+              "rates": {
+                "valley": 0.888,
+                "flat": 0.888,
+                "peak": 0.888,
+                "tip": 0.888
+              }
+            }
+          ]
+        }
+      ],
+      "tip_rules": []
+    }
+  ]
+}

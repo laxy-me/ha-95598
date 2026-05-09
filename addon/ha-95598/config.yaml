@@ -1,0 +1,72 @@
+name: "95598 for Home Assistant"
+version: "0.1.0"
+slug: "ha_95598"
+description: "Sync 95598 electricity data to Home Assistant through MQTT Discovery"
+url: "https://github.com/renxiaoyaoo/ha-95598"
+arch:
+  - aarch64
+  - amd64
+startup: services
+boot: auto
+init: false
+host_network: true
+build: true
+map:
+  - type: addon_config
+    read_only: false
+    path: /app/data
+options:
+  account: ""
+  password: ""
+  login_credentials: []
+  ignore_user_id: ""
+  mqtt_host: "core-mosquitto"
+  mqtt_port: 1883
+  mqtt_username: ""
+  mqtt_password: ""
+  job_start_time: "07:00"
+  job_times: 2
+  retry_times_limit: 3
+  retry_wait_time_offset_unit: 5
+  republish_interval_minutes: 60
+  daily_usage_window_days: 7
+  publish_tou_detail_sensors: false
+  tou_price_config: "config/tou_price_config.json"
+  notifier: "none"
+  tg_bot_token: ""
+  tg_chat_id: ""
+  tg_api_base_url: "https://api.telegram.org"
+  stale_data_alert_days: 2
+  captcha_point_click_max_refreshes: 4
+  login_fallback: "qrcode"
+  qr_code_login_refresh_limit: 1
+  trace_retention_days: 7
+schema:
+  account: str
+  password: password
+  login_credentials:
+    - account: str
+      password: password
+      label: str?
+  ignore_user_id: str?
+  mqtt_host: str?
+  mqtt_port: port
+  mqtt_username: str?
+  mqtt_password: password?
+  job_start_time: str
+  job_times: int(1,10)
+  retry_times_limit: int(0,10)
+  retry_wait_time_offset_unit: int(2,30)
+  republish_interval_minutes: int(0,1440)
+  daily_usage_window_days: list(7|30)
+  publish_tou_detail_sensors: bool
+  tou_price_config: str
+  notifier: list(none|telegram)
+  tg_bot_token: str?
+  tg_chat_id: str?
+  tg_api_base_url: url?
+  stale_data_alert_days: int(1,30)
+  captcha_point_click_max_refreshes: int(0,10)
+  login_fallback: list(qrcode|none)
+  qr_code_login_refresh_limit: int(0,5)
+  trace_retention_days: int(1,30)
