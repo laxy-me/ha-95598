@@ -75,12 +75,9 @@ export LLM_API_KEY="$(json_get llm_api_key "")"
 export LLM_PROVIDER="$(json_get llm_provider zhipu)"
 export LLM_MODEL="$(json_get llm_model "")"
 export LLM_BASE_URL="$(json_get llm_base_url "")"
-export QR_CODE_PUBLIC_URL="$(json_get qr_code_public_url "")"
-# Drop the QR mirror under /share so HA Core (which mounts /share) can
-# sync it into /config/www/ for serving under /local/. Supervisor on
-# this host silently strips homeassistant_config map entries for
-# user-installed git add-ons, so we go through /share instead.
-export QR_CODE_PUBLIC_PATH="/share/95598_qr.png"
+# Ingress port for the small QR HTTP server. Must match config.yaml's
+# ingress_port. The python qr_server reads this env var.
+export INGRESS_PORT=8099
 
 # TOU rate override: only export when user actually set a nonzero peak rate.
 # Otherwise leave unset so tou_price.py falls back to the JSON config file.

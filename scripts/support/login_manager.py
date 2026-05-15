@@ -346,30 +346,6 @@ class LoginManager:
                 file.write(img_screenshot)
                 logging.info("save qrcode to %s", qr_code_path)
 
-            # Mirror the QR into the public Home Assistant www dir so it
-            # can be opened in a browser via the configured public URL.
-            public_path = os.getenv("QR_CODE_PUBLIC_PATH") or ""
-            if public_path:
-                try:
-                    Path(public_path).parent.mkdir(parents=True, exist_ok=True)
-                    Path(public_path).write_bytes(img_screenshot)
-                except Exception as exc:
-                    logging.warning("Failed to mirror QR to %s: %s", public_path, exc)
-            public_url = (os.getenv("QR_CODE_PUBLIC_URL") or "").strip()
-            if public_url:
-                # HA's /local/ serves with 24h cache headers, so a
-                # plain URL would return the previous (expired) QR
-                # from browser cache on reload. Append a cache-buster
-                # query string to force a fresh fetch each refresh.
-                cache_buster = int(time.time())
-                separator = "&" if "?" in public_url else "?"
-                logging.info(
-                    "Open QR in browser: %s%st=%s",
-                    public_url,
-                    separator,
-                    cache_buster,
-                )
-
             if self.notifier.send_qr_code(img_screenshot):
                 logging.info("QRCode notification sent successfully.")
             else:

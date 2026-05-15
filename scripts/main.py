@@ -53,6 +53,22 @@ def main():
         logging.error("Failed to read runtime configuration: %s", exc)
         sys.exit()
 
+    # Start the small Ingress HTTP server that serves the current QR
+    # PNG. Safe no-op when INGRESS_PORT isn't set.
+    try:
+        from scripts import qr_server
+        qr_server.start()
+    except Exception as exc:
+        logging.warning("QR server failed to start: %s", exc)
+
+    # Background thread that periodically pings 95598 with persisted
+    # cookies — keeps the session alive if 95598 uses sliding TTL.
+    try:
+        from scripts import session_keepalive
+        session_keepalive.start()
+    except Exception as exc:
+        logging.warning("Session keepalive failed to start: %s", exc)
+
     logging.info("The current project version is %s.", config.version)
     logging.info("Configured %s login credential(s).", len(config.credentials))
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

@@ -1,5 +1,5 @@
 name: "95598 for Home Assistant (laxy fork)"
-version: "0.1.2"
+version: "0.1.3"
 slug: "ha_95598"
 description: "Sync 95598 electricity data to Home Assistant (PID 1 fix + LLM vision captcha solver)"
 url: "https://github.com/laxy-me/ha-95598"
@@ -8,6 +8,14 @@ arch:
   - amd64
 startup: services
 boot: auto
+# Ingress: serve the latest QR code through HA's auth proxy. Users
+# can hit "Open Web UI" on this addon page to see / refresh the QR
+# without exposing /share or /local/.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:flash
+panel_title: "95598 用电"
+homeassistant_api: true
 # Upstream had `init: false` which left bash as PID 1. xvfb-run's
 # wait-for-X-ready uses USR1 signaling, but bash PID 1 treats unhandled
 # USR1 as SIG_IGN, so the parent never wakes from `wait` and the
@@ -53,10 +61,6 @@ options:
   llm_provider: "zhipu"
   llm_model: ""
   llm_base_url: ""
-  # Optional: public URL where /homeassistant/www/95598_qr.png is served.
-  # When set, the addon logs a clickable link to the QR each time it
-  # refreshes the code. Leave empty to skip the URL log line.
-  qr_code_public_url: ""
   # TOU rate override. When tou_peak_rate is set, the addon synthesizes a
   # single-tier all-year config from these four numbers (defaults match
   # peak for households on simple peak/valley plans). This replaces the
@@ -98,7 +102,6 @@ schema:
   llm_provider: list(zhipu|openai|custom)?
   llm_model: str?
   llm_base_url: str?
-  qr_code_public_url: str?
   tou_peak_rate: float(0,10)?
   tou_valley_rate: float(0,10)?
   tou_flat_rate: float(0,10)?
