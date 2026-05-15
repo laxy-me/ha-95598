@@ -710,7 +710,7 @@ class DataFetcher:
             # monthly bill TOU calculator) see correct numbers.
             if not self._has_completed_stage(progress, "tou_backfill"):
                 try:
-                    self._backfill_historic_daily_tou(driver, user_id, days=30)
+                    self._backfill_historic_daily_tou(driver, user_id, days=self._get_daily_usage_window_days())
                     updater.update_progress_stage(user_id, "tou_backfill", fetch_date=self._progress_date())
                     progress = updater.get_progress(user_id)
                 except Exception as exc:
@@ -840,11 +840,12 @@ class DataFetcher:
 
         return yearly_usage, yearly_charge
 
-    def _backfill_historic_daily_tou(self, driver, user_id: str, days: int = 30) -> None:
+    def _backfill_historic_daily_tou(self, driver, user_id: str, days: int = 7) -> None:
         """Use the date-range Vue query to refresh TOU breakdown for the
-        last ``days`` days. Persists each row via ``insert_daily_data``
-        which COALESCEs the TOU fields, so existing values are only
-        overwritten when the range query gives a real number.
+        last ``days`` days (matches the user's daily_usage_window_days
+        option). Persists each row via ``insert_daily_data`` which
+        COALESCEs the TOU fields, so existing values are only overwritten
+        when the range query gives a real number.
         """
         if self.db is None:
             return
