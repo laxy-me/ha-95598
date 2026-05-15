@@ -912,10 +912,24 @@ class DataFetcher:
                     + float(row.get("peak_usage") or 0)
                     + float(row.get("tip_usage") or 0)
                 )
+                # Recompute total_charge using the active TOU rates so it
+                # reflects the current single-tier/env-override settings
+                # rather than whatever rate was active when this row was
+                # first persisted.
+                month_before = db.get_month_total_usage_before(date)
+                charge = self.tou_price_resolver.calculate_daily_charge(
+                    date,
+                    row.get("valley_usage"),
+                    row.get("flat_usage"),
+                    row.get("peak_usage"),
+                    row.get("tip_usage"),
+                    month_before,
+                )
                 ok = db.insert_daily_data(
                     {
                         "date": date,
                         "total_usage": total_usage or float(row.get("total_usage") or 0),
+                        "total_charge": charge,
                         "valley_usage": row.get("valley_usage", 0.0),
                         "flat_usage": row.get("flat_usage", 0.0),
                         "peak_usage": row.get("peak_usage", 0.0),
@@ -927,6 +941,58 @@ class DataFetcher:
             logging.info(
                 "Historic TOU backfill for %s: collected=%s persisted=%s range=%s..%s",
                 user_id, len(rows), persisted, range_start, range_end,
+            )
+        finally:
+            db.close_connect()
+
+        # Recompute daily total_charge for every row in window so the
+        # value reflects current TOU rates even when the row was first
+        # persisted under a different config. Local-only, no network.
+        self._recompute_daily_charges(user_id, window_start, today_str)
+
+    def _recompute_daily_charges(self, user_id: str, window_start: str, window_end_exclusive: str) -> None:
+        """Walk daily_usage rows in [window_start, window_end_exclusive)
+        with non-zero TOU breakdown and rewrite total_charge from the
+        current TOU price resolver."""
+        from scripts.support.db import SqliteDB
+        db = SqliteDB()
+        if not db.connect_user_db(user_id):
+            return
+        try:
+            cursor = db.connect.cursor()
+            cursor.execute(
+                f"""
+                SELECT date, valley_usage, flat_usage, peak_usage, tip_usage
+                FROM {db.DAILY_TABLE}
+                WHERE user_id = ? AND date >= ? AND date < ?
+                  AND (COALESCE(peak_usage, 0) + COALESCE(valley_usage, 0)
+                       + COALESCE(flat_usage, 0) + COALESCE(tip_usage, 0)) > 0
+                ORDER BY date
+                """,
+                (db.user_id, window_start, window_end_exclusive),
+            )
+            rows = cursor.fetchall()
+            cursor.close()
+            updated = 0
+            for date, valley, flat, peak, tip in rows:
+                month_before = db.get_month_total_usage_before(date)
+                charge = self.tou_price_resolver.calculate_daily_charge(
+                    date, valley, flat, peak, tip, month_before,
+                )
+                if charge is None:
+                    continue
+                cur = db.connect.cursor()
+                cur.execute(
+                    f"UPDATE {db.DAILY_TABLE} SET total_charge = ?, updated_at = CURRENT_TIMESTAMP "
+                    f"WHERE user_id = ? AND date = ?",
+                    (charge, db.user_id, date),
+                )
+                cur.close()
+                updated += 1
+            db.connect.commit()
+            logging.info(
+                "Recomputed daily total_charge for %s rows in %s..%s",
+                updated, window_start, window_end_exclusive,
             )
         finally:
             db.close_connect()
