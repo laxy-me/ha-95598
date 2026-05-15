@@ -42,6 +42,12 @@ class LoginManager:
         self._credential_index = 0
         self._account = credentials[0].account
         self._password = credentials[0].password
+        # 95598 caps password logins per account per UTC day. RK001
+        # ("网络连接超时") is the error message it returns when that
+        # cap is hit. Once we see it in a session, skip further
+        # password attempts and go straight to QR until the next
+        # process start (or the next day's quota reset).
+        self._password_login_locked: set[str] = set()
         self.session_manager = session_manager
         self.driver_wait_time = driver_wait_time
         self.qr_wait_count = qr_wait_count
@@ -112,30 +118,57 @@ class LoginManager:
             logging.debug("Failed to confirm login success after redirect: %s", exc)
             return False
 
+    # 95598 daily-cap message. Match keywords rather than the full
+    # localized string to tolerate punctuation / wording drift.
+    _DAILY_LIMIT_MARKERS = ("RK001", "网络连接超时", "登录次数", "超出限制", "请明日")
+
+    def _classify_error(self, error: str) -> str:
+        if not error:
+            return ""
+        if any(marker in error for marker in self._DAILY_LIMIT_MARKERS):
+            return "limit_exceeded"
+        return "error"
+
     def _wait_for_post_password_login_state(self, driver, timeout: int = 12) -> str:
         try:
             WebDriverWait(driver, timeout).until(
                 lambda d: self._confirm_login_success(d)
-                or self.tencent_captcha.has_captcha(d)
                 or bool(self._get_error_message(d, "//div[@class='errmsg-tip']//span"))
+                or self.tencent_captcha.has_captcha(d)
             )
         except Exception:
             pass
 
         if self._confirm_login_success(driver):
             return "success"
+        # 95598 preloads the Tencent captcha widget DOM into the page
+        # *before* the user submits anything, so `has_captcha` is True
+        # whether or not a real captcha was actually issued. Check the
+        # explicit error tip first — if 95598 surfaced an errmsg (e.g.
+        # RK001 daily limit) we must not mistake the preloaded widget
+        # for a real captcha challenge.
+        error_msg = self._get_error_message(driver, "//div[@class='errmsg-tip']//span")
+        if error_msg:
+            return self._classify_error(error_msg)
         if self.tencent_captcha.has_captcha(driver):
             return "captcha"
-        if self._get_error_message(driver, "//div[@class='errmsg-tip']//span"):
-            return "error"
         return "unknown"
 
     def _login_with_credential_rotation(self, driver, phone_code: bool = False) -> bool:
         total_credentials = len(self._credentials)
+        skipped_all = True
         for attempt in range(total_credentials):
             credential = self._activate_credential(
                 self._credential_index if attempt == 0 else self._credential_index + 1
             )
+            if credential.account in self._password_login_locked:
+                logging.info(
+                    "Skip password login for credential %s — daily password-login cap "
+                    "already hit this session (RK001). Will try fallback only.",
+                    credential.label,
+                )
+                continue
+            skipped_all = False
             logging.info(
                 "Try interactive login with credential [%s/%s]: %s",
                 attempt + 1,
@@ -146,7 +179,10 @@ class LoginManager:
                 return True
             logging.info("Login credential %s did not complete password login.", credential.label)
 
-        logging.info("All configured login credentials failed password login. Switch to configured fallback.")
+        if skipped_all:
+            logging.info("All credentials are locked out of password login. Using fallback directly.")
+        else:
+            logging.info("All configured login credentials failed password login. Switch to configured fallback.")
         return self._fallback_login(driver)
 
     @ErrorWatcher.watch
@@ -223,12 +259,22 @@ class LoginManager:
                 return self._fallback_login(driver)
             if self._confirm_login_success(driver):
                 return True
-            if post_login_state == "error":
+            if post_login_state in ("error", "limit_exceeded"):
                 error_message = self._get_error_message(driver, "//div[@class='errmsg-tip']//span")
-                logging.info(
-                    "Password login returned a page error without a usable session: %s. Switch to QR-code login fallback.",
-                    error_message or "<empty>",
-                )
+                if post_login_state == "limit_exceeded":
+                    self._password_login_locked.add(self._account)
+                    logging.warning(
+                        "95598 hit daily password-login cap for %s: %s. "
+                        "Locking out password login this session — using QR-code fallback "
+                        "(QR logins do not consume the password quota).",
+                        mask_account(self._account),
+                        error_message or "<empty>",
+                    )
+                else:
+                    logging.info(
+                        "Password login returned a page error without a usable session: %s. Switch to QR-code login fallback.",
+                        error_message or "<empty>",
+                    )
                 self._log_page_state(driver, "after_submit_password_login_error")
                 self._save_tencent_presence(driver)
                 if self.tencent_captcha.has_captcha(driver):
