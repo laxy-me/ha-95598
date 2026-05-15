@@ -497,13 +497,40 @@ class DataFetcher:
                     if needs_deep_sync:
                         self._expand_bill_summary(driver)
 
+            current_month_key = datetime.now().strftime("%Y-%m")
             for row in rows:
                 existing = self.db.get_period_row("monthly_usage", "month", row["month"]) or {}
+                new_usage = row.get("total_usage") if row.get("total_usage") is not None else existing.get("total_usage", 0.0)
+                new_charge = row.get("total_charge") if row.get("total_charge") is not None else existing.get("total_charge")
+
+                # Defense: bill-detail page sometimes returns the 谷 sub-row
+                # or 已交 instead of 应交 for closed past months. If new
+                # value is < 70% of what we have, keep the existing one.
+                if (
+                    row["month"] < current_month_key
+                    and existing.get("total_charge") is not None
+                ):
+                    try:
+                        ex_u = float(existing.get("total_usage") or 0)
+                        ex_c = float(existing.get("total_charge") or 0)
+                        nu = float(new_usage or 0)
+                        nc = float(new_charge or 0)
+                        if (ex_u > 0 and nu < ex_u * 0.7) or (ex_c > 0 and nc < ex_c * 0.7):
+                            logging.info(
+                                "Skip overwrite of monthly_usage %s from bill TOU sync: existing "
+                                "%.2f kWh / ¥%.2f, 95598 returned %.2f kWh / ¥%.2f.",
+                                row["month"], ex_u, ex_c, nu, nc,
+                            )
+                            touched_years.add(row["month"][:4])
+                            continue
+                    except (TypeError, ValueError):
+                        pass
+
                 self.db.insert_monthly_data(
                     {
                         "month": row["month"],
-                        "total_usage": row.get("total_usage") if row.get("total_usage") is not None else existing.get("total_usage", 0.0),
-                        "total_charge": row.get("total_charge") if row.get("total_charge") is not None else existing.get("total_charge"),
+                        "total_usage": new_usage,
+                        "total_charge": new_charge,
                         "valley_usage": row.get("valley_usage", 0.0),
                         "flat_usage": row.get("flat_usage", 0.0),
                         "peak_usage": row.get("peak_usage", 0.0),
