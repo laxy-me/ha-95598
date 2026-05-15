@@ -880,9 +880,14 @@ class DataFetcher:
 
             if not unsettled:
                 logging.info(
-                    "Historic TOU backfill: all daily rows in last %s days have TOU breakdown, skipping.",
+                    "Historic TOU backfill: all daily rows in last %s days have TOU breakdown, skipping range fetch.",
                     days,
                 )
+                # Even when no Vue query is needed, recompute local
+                # daily charges so any rate change since the previous
+                # fetch is applied to historic rows.
+                db.close_connect()
+                self._recompute_daily_charges(user_id, window_start, today_str)
                 return
 
             range_start = unsettled[0]
