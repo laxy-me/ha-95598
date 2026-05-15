@@ -172,6 +172,28 @@ class SensorUpdater:
     def _discovery_topic(self, sensor_name: str) -> str:
         return f"{self.discovery_prefix}/sensor/{self._sensor_object_id(sensor_name)}/config"
 
+    @staticmethod
+    def _period_to_iso(period: str) -> str:
+        """Convert a period key (YYYY, YYYY-MM, YYYY-MM-DD) to an ISO
+        datetime at the start of that period in local tz — the format
+        HA expects for ``last_reset``."""
+        try:
+            tz = datetime.now().astimezone().tzinfo
+            parts = (period or "").split("-")
+            if len(parts) == 1 and parts[0]:
+                return datetime(int(parts[0]), 1, 1, tzinfo=tz).isoformat()
+            if len(parts) == 2:
+                return datetime(int(parts[0]), int(parts[1]), 1, tzinfo=tz).isoformat()
+            if len(parts) == 3:
+                return datetime(
+                    int(parts[0]), int(parts[1]), int(parts[2]), tzinfo=tz,
+                ).isoformat()
+        except Exception:
+            pass
+        return datetime.now().astimezone().replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        ).isoformat()
+
     def _publish_discovery(self, sensor_name: str, user_id: str, device_class: str, unit: str, icon: str, state_class: str):
         friendly_name = self._sensor_friendly_label(sensor_name, user_id)
         payload = {
@@ -288,6 +310,8 @@ class SensorUpdater:
             return
         usage_sensor = LAST_MONTH_USAGE_SENSOR_NAME + postfix
         charge_sensor = LAST_MONTH_CHARGE_SENSOR_NAME + postfix
+        period = summary["month"]
+        last_reset = self._period_to_iso(period)
         self._publish_sensor_state(
             usage_sensor,
             user_id,
@@ -296,11 +320,11 @@ class SensorUpdater:
             icon="mdi:calendar-month-outline",
             device_class="energy",
             state_class="total",
-            extra_attributes={"period": summary["month"]},
+            extra_attributes={"period": period, "last_reset": last_reset},
         )
         logging.info(
             "Homeassistant sensor %s state updated: %s kWh (period=%s)",
-            usage_sensor, summary["usage"], summary["month"],
+            usage_sensor, summary["usage"], period,
         )
         self._publish_sensor_state(
             charge_sensor,
@@ -310,11 +334,11 @@ class SensorUpdater:
             icon="mdi:cash-clock",
             device_class="monetary",
             state_class="total",
-            extra_attributes={"period": summary["month"]},
+            extra_attributes={"period": period, "last_reset": last_reset},
         )
         logging.info(
             "Homeassistant sensor %s state updated: %s CNY (period=%s)",
-            charge_sensor, summary["charge"], summary["month"],
+            charge_sensor, summary["charge"], period,
         )
 
     def _mirror_db_to_share(self) -> None:
@@ -485,8 +509,11 @@ class SensorUpdater:
         except Exception:
             last_daily_date_fmt = last_daily_date
 
+        # The value is yesterday's full-day kWh; treat as a daily
+        # cumulative counter that resets at the start of that day.
+        last_reset_iso = self._period_to_iso(last_daily_date)
         extra_attributes = {
-            "last_reset": datetime.strptime(last_daily_date, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00+00:00"),
+            "last_reset": last_reset_iso,
             "last_daily_date_fmt": last_daily_date_fmt,
         }
 
@@ -497,16 +524,15 @@ class SensorUpdater:
             unit="kWh",
             icon="mdi:lightning-bolt",
             device_class="energy",
-            state_class="measurement",
+            state_class="total",
             extra_attributes=extra_attributes,
         )
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} kWh, last_daily_date{last_daily_date}")
 
     def update_last_daily_charge(self, user_id: str, postfix: str, last_daily_date: str, sensorState: float):
         sensorName = DAILY_CHARGE_SENSOR_NAME + postfix
-        extra_attributes = {
-            "last_reset": datetime.strptime(last_daily_date, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00+00:00"),
-        }
+        last_reset_iso = self._period_to_iso(last_daily_date)
+        extra_attributes = {"last_reset": last_reset_iso}
         self._publish_sensor_state(
             sensorName,
             user_id,
@@ -514,7 +540,7 @@ class SensorUpdater:
             unit="CNY",
             icon="mdi:cash",
             device_class="monetary",
-            state_class="measurement",
+            state_class="total",
             extra_attributes=extra_attributes,
         )
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} CNY, last_daily_date{last_daily_date}")
@@ -552,10 +578,8 @@ class SensorUpdater:
             unit="kWh",
             icon=icon,
             device_class="energy",
-            state_class="measurement",
-            extra_attributes={
-                "last_reset": datetime.strptime(last_daily_date, "%Y-%m-%d").strftime("%Y-%m-%dT00:00:00+00:00"),
-            },
+            state_class="total",
+            extra_attributes={"last_reset": self._period_to_iso(last_daily_date)},
         )
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} kWh")
 
@@ -591,8 +615,11 @@ class SensorUpdater:
             unit="kWh",
             icon=icon,
             device_class="energy",
-            state_class="measurement",
-            extra_attributes={"period": period_value},
+            state_class="total",
+            extra_attributes={
+                "period": period_value,
+                "last_reset": self._period_to_iso(period_value),
+            },
         )
         logging.info("Homeassistant sensor %s state updated: %s kWh (period=%s)", sensor_name, sensor_state, period_value)
 
@@ -627,8 +654,8 @@ class SensorUpdater:
 
     def update_balance(self, user_id: str, postfix: str, sensorState: float):
         sensorName = BALANCE_SENSOR_NAME + postfix
-
-        last_reset = datetime.now().strftime("%Y-%m-%d, %H:%M:%S")
+        # Balance is an instantaneous account state (can go up via topups
+        # and down via charges); not a counter — no last_reset.
         self._publish_sensor_state(
             sensorName,
             user_id,
@@ -636,8 +663,7 @@ class SensorUpdater:
             unit="CNY",
             icon="mdi:cash-100",
             device_class="monetary",
-            state_class="total",
-            extra_attributes={"last_reset": last_reset},
+            state_class="measurement",
         )
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} CNY")
 
@@ -655,11 +681,8 @@ class SensorUpdater:
             period = datetime.now().strftime("%Y-%m")
         # Resets at the start of each month. state_class=total +
         # explicit last_reset lets HA's Statistics integration roll
-        # this into the Energy dashboard correctly. Must be ISO with
-        # tz; use local time + offset so HA picks it up exactly.
-        last_reset = datetime.now().astimezone().replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0,
-        ).isoformat()
+        # this into the Energy dashboard correctly.
+        last_reset = self._period_to_iso(period)
         self._publish_sensor_state(
             sensorName,
             user_id,
@@ -683,9 +706,7 @@ class SensorUpdater:
             if usage
             else YEARLY_CHARGE_SENSOR_NAME + postfix
         )
-        last_reset = datetime.now().astimezone().replace(
-            month=1, day=1, hour=0, minute=0, second=0, microsecond=0,
-        ).isoformat()
+        last_reset = self._period_to_iso(str(datetime.now().year))
         self._publish_sensor_state(
             sensorName,
             user_id,
