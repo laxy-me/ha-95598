@@ -277,7 +277,7 @@ class LoginManager:
                     )
                 self._log_page_state(driver, "after_submit_password_login_error")
                 self._save_tencent_presence(driver)
-                if self.tencent_captcha.has_captcha(driver):
+                if self.tencent_captcha.is_captcha_actually_displayed(driver):
                     self.tencent_captcha.capture_state(driver, "after_submit_password_login_error_tencent_captcha")
                 if not allow_fallback:
                     return False
@@ -385,7 +385,7 @@ class LoginManager:
                     should_refresh = True
                     break
 
-                if self.tencent_captcha.has_captcha(driver):
+                if self.tencent_captcha.is_captcha_actually_displayed(driver):
                     captcha_info = self.tencent_captcha.get_info(driver)
                     logging.info(
                         "Tencent captcha still visible during QR fallback, mode=%s, prompt=%s",
@@ -414,7 +414,7 @@ class LoginManager:
             logging.warning("qrcode Login timeout")
             break
 
-        if self.tencent_captcha.has_captcha(driver):
+        if self.tencent_captcha.is_captcha_actually_displayed(driver):
             captcha_info = self.tencent_captcha.get_info(driver)
             logging.info(
                 "Tencent captcha still visible after QR timeout, mode=%s, prompt=%s",

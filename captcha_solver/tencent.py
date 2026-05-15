@@ -64,6 +64,61 @@ class TencentCaptchaHandler:
         except Exception:
             return False
 
+    def is_captcha_actually_displayed(self, driver) -> bool:
+        """True only if a Tencent widget is rendered inside the viewport.
+
+        ``has_captcha`` matches the widget even when 95598 has it
+        preloaded at ``top: -1000000`` (offscreen, waiting state). For
+        diagnostic / fallback paths where we want to know whether the
+        user is actually being shown a captcha *right now*, that's a
+        false positive — every 95598 login page reports True.
+        """
+        try:
+            rect = driver.execute_script(
+                """
+                const selectors = [
+                  '.tencent-captcha-dy__warp',
+                  '.tencent-captcha-dy__wrapper',
+                  '.tencent-captcha__wrapper',
+                  '.tencent-captcha-dy__body-wrap',
+                  '.tencent-captcha-dy__image-area',
+                  '.tencent-captcha-dy__verify-bg',
+                  '.tencent-captcha-dy__verify-bg-img',
+                  '[class*="tencent-captcha-dy__content"]'
+                ];
+                const vw = window.innerWidth || document.documentElement.clientWidth;
+                const vh = window.innerHeight || document.documentElement.clientHeight;
+                const find = (doc) => {
+                  for (const sel of selectors) {
+                    for (const el of doc.querySelectorAll(sel)) {
+                      const r = el.getBoundingClientRect();
+                      const style = doc.defaultView.getComputedStyle(el);
+                      if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')
+                        continue;
+                      if (r.width < 40 || r.height < 40) continue;
+                      // Reject the offscreen-decoy position 95598 parks
+                      // the preloaded widget at (`top: -1000000`).
+                      if (r.bottom <= 0 || r.right <= 0) continue;
+                      if (r.top >= vh || r.left >= vw) continue;
+                      return { top: r.top, left: r.left, w: r.width, h: r.height };
+                    }
+                  }
+                  const frames = Array.from(doc.querySelectorAll('iframe,frame'));
+                  for (const f of frames) {
+                    try {
+                      const c = f.contentDocument;
+                      if (c) { const r = find(c); if (r) return r; }
+                    } catch (e) {}
+                  }
+                  return null;
+                };
+                return find(document);
+                """
+            )
+            return rect is not None
+        except Exception:
+            return False
+
     @staticmethod
     def _get_visible_widget(driver):
         try:
