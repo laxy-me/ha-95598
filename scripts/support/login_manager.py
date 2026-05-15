@@ -346,6 +346,19 @@ class LoginManager:
                 file.write(img_screenshot)
                 logging.info("save qrcode to %s", qr_code_path)
 
+            # Mirror the QR into the public Home Assistant www dir so it
+            # can be opened in a browser via the configured public URL.
+            public_path = os.getenv("QR_CODE_PUBLIC_PATH") or ""
+            if public_path:
+                try:
+                    Path(public_path).parent.mkdir(parents=True, exist_ok=True)
+                    Path(public_path).write_bytes(img_screenshot)
+                except Exception as exc:
+                    logging.warning("Failed to mirror QR to %s: %s", public_path, exc)
+            public_url = (os.getenv("QR_CODE_PUBLIC_URL") or "").strip()
+            if public_url:
+                logging.info("Open QR in browser: %s", public_url)
+
             if self.notifier.send_qr_code(img_screenshot):
                 logging.info("QRCode notification sent successfully.")
             else:

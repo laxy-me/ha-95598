@@ -75,6 +75,8 @@ export LLM_API_KEY="$(json_get llm_api_key "")"
 export LLM_PROVIDER="$(json_get llm_provider zhipu)"
 export LLM_MODEL="$(json_get llm_model "")"
 export LLM_BASE_URL="$(json_get llm_base_url "")"
+export QR_CODE_PUBLIC_URL="$(json_get qr_code_public_url "")"
+export QR_CODE_PUBLIC_PATH="/homeassistant/www/95598_qr.png"
 
 LOGIN_CREDENTIALS_JSON="$(json_dump login_credentials)"
 if [[ "${LOGIN_CREDENTIALS_JSON}" != "[]" ]]; then
