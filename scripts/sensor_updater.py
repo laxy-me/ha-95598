@@ -288,7 +288,7 @@ class SensorUpdater:
             unit=USAGE_UNIT,
             icon="mdi:calendar-month-outline",
             device_class="energy",
-            state_class="measurement",
+            state_class="total",
             extra_attributes={"period": summary["month"]},
         )
         logging.info(
@@ -646,6 +646,12 @@ class SensorUpdater:
             period = current_month_summary["period"]
         else:
             period = datetime.now().strftime("%Y-%m")
+        # Resets at the start of each month. state_class=total +
+        # explicit last_reset lets HA's Statistics integration roll
+        # this into the Energy dashboard correctly.
+        last_reset = datetime.now().replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0,
+        ).isoformat()
         self._publish_sensor_state(
             sensorName,
             user_id,
@@ -653,8 +659,8 @@ class SensorUpdater:
             unit="kWh" if usage else "CNY",
             icon="mdi:lightning-bolt" if usage else "mdi:cash",
             device_class="energy" if usage else "monetary",
-            state_class="measurement",
-            extra_attributes={"period": period},
+            state_class="total",
+            extra_attributes={"period": period, "last_reset": last_reset},
         )
         if current_month_summary is not None:
             self.save_partial_data(
