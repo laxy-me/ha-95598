@@ -184,15 +184,42 @@ class DataPersister:
 
             if month:
                 reference_year = str(last_daily_date)[:4] if last_daily_date else datetime.now().strftime("%Y")
+                current_month_key_for_guard = datetime.now().strftime("%Y-%m")
                 for index in range(len(month)):
                     try:
                         month_key = self._normalize_month_value(month[index], reference_year)
+                        existing_row = self.db.get_period_row("monthly_usage", "month", month_key) or {}
+                        new_usage = month_usage[index]
+                        new_charge = month_charge[index]
+
+                        # Defense for past closed months: 95598's monthly
+                        # tab sometimes returns the 谷-only sub-row or a
+                        # partially-paid amount rather than the full bill,
+                        # which would clobber the real 应交 we already
+                        # stored. If the new value is dramatically smaller
+                        # than what we have, keep the existing bill.
+                        if month_key < current_month_key_for_guard and existing_row.get("total_charge") is not None:
+                            try:
+                                ex_usage = float(existing_row.get("total_usage") or 0)
+                                ex_charge = float(existing_row.get("total_charge") or 0)
+                                nu = float(new_usage or 0)
+                                nc = float(new_charge or 0)
+                                if (ex_usage > 0 and nu < ex_usage * 0.7) or (ex_charge > 0 and nc < ex_charge * 0.7):
+                                    logging.info(
+                                        "Skip overwrite of monthly_usage %s: existing %.2f kWh / ¥%.2f, "
+                                        "95598 returned %.2f kWh / ¥%.2f (likely partial / non-bill row).",
+                                        month_key, ex_usage, ex_charge, nu, nc,
+                                    )
+                                    continue
+                            except (TypeError, ValueError):
+                                pass
+
                         existing_tou = self.db.get_period_tou_values("monthly_usage", "month", month_key)
                         self.db.insert_monthly_data(
                             {
                                 "month": month_key,
-                                "total_usage": month_usage[index],
-                                "total_charge": month_charge[index],
+                                "total_usage": new_usage,
+                                "total_charge": new_charge,
                                 "valley_usage": existing_tou.get("valley_usage", 0.0),
                                 "flat_usage": existing_tou.get("flat_usage", 0.0),
                                 "peak_usage": existing_tou.get("peak_usage", 0.0),
