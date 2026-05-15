@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 class CacheStore:
-    FETCH_STAGES = ("none", "balance", "yearly", "monthly", "daily", "tou", "persist", "billing", "complete")
+    FETCH_STAGES = ("none", "balance", "yearly", "monthly", "daily", "tou", "persist", "tou_backfill", "billing", "complete")
 
     def __init__(self, cache_file: Path):
         self.cache_file = cache_file
