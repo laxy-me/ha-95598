@@ -855,7 +855,7 @@ class DataFetcher:
             return
         from datetime import datetime, timedelta
         today = datetime.now().date()
-        window_start = (today - timedelta(days=days)).isoformat()
+        window_start_date = today - timedelta(days=days)
         # today's row is updated by the main daily fetch step, skip here.
         today_str = today.isoformat()
 
@@ -864,6 +864,29 @@ class DataFetcher:
         if not db.connect_user_db(user_id):
             return
         try:
+            # First-init / month-not-covered guard: if the window
+            # doesn't reach the first of the current month AND we have
+            # no daily row for that day yet, extend the backfill
+            # window back to the 1st so we pull a full month-to-date
+            # peak/valley breakdown even when the user picked
+            # daily_usage_window_days=7. Only widens once per month.
+            month_start = today.replace(day=1)
+            if window_start_date > month_start:
+                cur = db.connect.cursor()
+                cur.execute(
+                    f"SELECT 1 FROM {db.DAILY_TABLE} WHERE user_id = ? AND date = ?",
+                    (db.user_id, month_start.isoformat()),
+                )
+                if cur.fetchone() is None:
+                    logging.info(
+                        "TOU backfill: extending window to month start %s "
+                        "(daily_usage_window_days=%s left current month uncovered).",
+                        month_start.isoformat(), days,
+                    )
+                    window_start_date = month_start
+                cur.close()
+            window_start = window_start_date.isoformat()
+
             cursor = db.connect.cursor()
             cursor.execute(
                 f"""
@@ -876,6 +899,22 @@ class DataFetcher:
                 (db.user_id, window_start, today_str),
             )
             unsettled = [r[0] for r in cursor.fetchall()]
+            # Also include month-to-date dates that aren't in DB yet —
+            # range collector will return them and we'll insert fresh.
+            if window_start_date <= month_start:
+                d = month_start
+                while d < today:
+                    iso = d.isoformat()
+                    cur2 = db.connect.cursor()
+                    cur2.execute(
+                        f"SELECT 1 FROM {db.DAILY_TABLE} WHERE user_id = ? AND date = ?",
+                        (db.user_id, iso),
+                    )
+                    if cur2.fetchone() is None and iso not in unsettled:
+                        unsettled.append(iso)
+                    cur2.close()
+                    d += timedelta(days=1)
+                unsettled.sort()
             cursor.close()
 
             if not unsettled:
