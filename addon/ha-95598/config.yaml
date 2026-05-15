@@ -83,4 +83,4 @@ schema:
   llm_api_key: password?
   llm_provider: list(zhipu|openai|custom)?
   llm_model: str?
-  llm_base_url: url?
+  llm_base_url: str?
