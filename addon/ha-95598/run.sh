@@ -77,4 +77,32 @@ if [[ "${LOGIN_CREDENTIALS_JSON}" != "[]" ]]; then
   export LOGIN_CREDENTIALS="${LOGIN_CREDENTIALS_JSON}"
 fi
 
-exec xvfb-run -a --server-args="-screen 0 1920x1080x24" python3 -m scripts.main
+# Start Xvfb in background instead of `xvfb-run`.
+#
+# `xvfb-run` deadlocks when running as PID 1 inside a container: it uses
+# `trap '' USR1` + `exec Xvfb` + `wait` to detect when the X server is
+# ready. The trick depends on the parent (xvfb-run) receiving SIGUSR1 to
+# break out of `wait`, but bash running as PID 1 treats unhandled
+# signals (including USR1) as SIG_IGN, so the signal never interrupts
+# `wait`. xvfb-run blocks forever in sigsuspend, no python child is
+# ever spawned, and the add-on appears running with ~23 MB RSS and
+# zero stdout.
+#
+# Running Xvfb directly in the background and pointing DISPLAY at it
+# avoids the signal dance entirely.
+DISPLAY_NUM=99
+rm -f "/tmp/.X${DISPLAY_NUM}-lock" "/tmp/.X11-unix/X${DISPLAY_NUM}" 2>/dev/null || true
+Xvfb ":${DISPLAY_NUM}" -screen 0 1920x1080x24 -nolisten tcp &
+XVFB_PID=$!
+trap 'kill ${XVFB_PID} 2>/dev/null || true' EXIT
+export DISPLAY=":${DISPLAY_NUM}"
+
+# Give Xvfb a moment to set up its socket so chromium doesn't race it.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -S "/tmp/.X11-unix/X${DISPLAY_NUM}" ]; then
+    break
+  fi
+  sleep 0.5
+done
+
+exec python3 -m scripts.main

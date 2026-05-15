@@ -1,14 +1,18 @@
-name: "95598 for Home Assistant"
-version: "0.1.0"
+name: "95598 for Home Assistant (laxy fork)"
+version: "0.1.1"
 slug: "ha_95598"
-description: "Sync 95598 electricity data to Home Assistant through MQTT Discovery"
-url: "https://github.com/renxiaoyaoo/ha-95598"
+description: "Sync 95598 electricity data to Home Assistant through MQTT Discovery (PID 1 signal fix)"
+url: "https://github.com/laxy-me/ha-95598"
 arch:
   - aarch64
   - amd64
 startup: services
 boot: auto
-init: false
+# Upstream had `init: false` which left bash as PID 1. xvfb-run's
+# wait-for-X-ready uses USR1 signaling, but bash PID 1 treats unhandled
+# USR1 as SIG_IGN, so the parent never wakes from `wait` and the
+# python child is never spawned. Removing the line lets supervisor
+# wrap the entrypoint with tini (its default).
 host_network: true
 build: true
 map:
