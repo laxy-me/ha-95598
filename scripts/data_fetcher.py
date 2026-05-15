@@ -1038,6 +1038,27 @@ class DataFetcher:
                 "Recomputed daily total_charge for %s rows in %s..%s",
                 updated, window_start, window_end_exclusive,
             )
+            # Roll the new daily charges up into monthly_usage and
+            # yearly_usage so total_electricity_charge / yearly_*
+            # sensors reflect the recomputed values instead of the
+            # stale figures persisted at fetch time (which used the
+            # provider's old per-kWh rate before tou_peak_rate /
+            # tou_valley_rate kicked in).
+            months_touched = set()
+            for date, *_ in rows:
+                if date and len(date) >= 7:
+                    months_touched.add(date[:7])
+            years_touched = set()
+            for month in sorted(months_touched):
+                if db.sync_monthly_from_daily(month):
+                    years_touched.add(month[:4])
+            for year in sorted(years_touched):
+                db.sync_yearly_from_monthly(year)
+            if months_touched or years_touched:
+                logging.info(
+                    "Synced monthly_usage for %s and yearly_usage for %s after recompute.",
+                    sorted(months_touched), sorted(years_touched),
+                )
         finally:
             db.close_connect()
 
