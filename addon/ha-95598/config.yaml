@@ -1,7 +1,7 @@
 name: "95598 for Home Assistant (laxy fork)"
-version: "0.1.1"
+version: "0.1.2"
 slug: "ha_95598"
-description: "Sync 95598 electricity data to Home Assistant through MQTT Discovery (PID 1 signal fix)"
+description: "Sync 95598 electricity data to Home Assistant (PID 1 fix + LLM vision captcha solver)"
 url: "https://github.com/laxy-me/ha-95598"
 arch:
   - aarch64
@@ -45,6 +45,12 @@ options:
   login_fallback: "qrcode"
   qr_code_login_refresh_limit: 1
   trace_retention_days: 7
+  # LLM vision captcha solver — when api key is set, the addon tries
+  # the LLM first, falls back to the local image solver if it fails.
+  llm_api_key: ""
+  llm_provider: "zhipu"
+  llm_model: ""
+  llm_base_url: ""
 schema:
   account: str
   password: password
@@ -74,3 +80,7 @@ schema:
   login_fallback: list(qrcode|none)
   qr_code_login_refresh_limit: int(0,5)
   trace_retention_days: int(1,30)
+  llm_api_key: password?
+  llm_provider: list(zhipu|openai|custom)?
+  llm_model: str?
+  llm_base_url: url?

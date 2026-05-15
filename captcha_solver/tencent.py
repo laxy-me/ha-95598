@@ -13,6 +13,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
 from captcha_solver.image import PointClickImageSolver, capture_element_image
 from captcha_solver.learning import CaptchaLearningStore
+from captcha_solver.llm_solver import LLMPointClickSolver, load_llm_config_from_env
 
 
 class TencentCaptchaHandler:
@@ -42,6 +43,15 @@ class TencentCaptchaHandler:
             os.getenv("CAPTCHA_POINT_CLICK_MAX_REFRESHES", self.POINT_CLICK_MAX_REFRESHES)
         )
         self._learning_store = None
+        # Optional LLM vision solver (tried before local solver when configured).
+        llm_config = load_llm_config_from_env()
+        self._llm_solver = LLMPointClickSolver(llm_config) if llm_config else None
+        if self._llm_solver is not None:
+            logging.info(
+                "LLM captcha solver enabled: model=%s, base_url=%s",
+                llm_config.model,
+                llm_config.base_url,
+            )
 
     def _get_learning_store(self) -> CaptchaLearningStore:
         if self._learning_store is None:
@@ -536,31 +546,46 @@ class TencentCaptchaHandler:
                     padding=4,
                 )
                 bg_image = Image.open(BytesIO(self.capture_element_image(driver, bg_element))).convert("RGB")
-                thresholds = self._get_learning_store().thresholds()
-                solutions = self._point_click_solver.ranked_solutions_from_images(
-                    answer_image,
-                    bg_image,
-                    limit=1,
-                    min_average_score=thresholds["min_average_score"],
-                    min_point_score=thresholds["min_point_score"],
-                    min_score_gap=thresholds["min_score_gap"],
-                )
-                if not solutions:
-                    self._save_point_click_assets(trace_dir, answer_image, bg_image, f"low_confidence_{attempt}")
-                    self._save_point_click_report(f"low_confidence_{attempt}")
-                    self._record_learning_sample("rejected", answer_image, bg_image, f"low_confidence_{attempt}")
-                    if attempt < self.point_click_max_refreshes and self._click_point_click_refresh(driver):
-                        self.capture_state(driver, f"tencent_point_click_refresh_{attempt + 1}")
-                        continue
-                    return False
 
-                average_score, points = solutions[0]
-                logging.info(
-                    "Trying point-click image solution after %s refresh(es): points=%s average_score=%.3f",
-                    attempt,
-                    [(round(x, 1), round(y, 1), round(score, 3)) for x, y, score in points],
-                    average_score,
-                )
+                # ---- Try LLM vision solver first when configured ----
+                points = None
+                average_score = 1.0
+                if self._llm_solver is not None:
+                    llm_points = self._llm_solver.solve(answer_image, bg_image)
+                    if llm_points:
+                        points = [(float(x), float(y), 1.0) for (x, y) in llm_points]
+                        logging.info(
+                            "Using LLM-predicted points for click attempt %s: %s",
+                            attempt,
+                            [(round(x, 1), round(y, 1)) for (x, y, _s) in points],
+                        )
+
+                # ---- Fall back to local solver if LLM unavailable or didn't return points ----
+                if points is None:
+                    thresholds = self._get_learning_store().thresholds()
+                    solutions = self._point_click_solver.ranked_solutions_from_images(
+                        answer_image,
+                        bg_image,
+                        limit=1,
+                        min_average_score=thresholds["min_average_score"],
+                        min_point_score=thresholds["min_point_score"],
+                        min_score_gap=thresholds["min_score_gap"],
+                    )
+                    if not solutions:
+                        self._save_point_click_assets(trace_dir, answer_image, bg_image, f"low_confidence_{attempt}")
+                        self._save_point_click_report(f"low_confidence_{attempt}")
+                        self._record_learning_sample("rejected", answer_image, bg_image, f"low_confidence_{attempt}")
+                        if attempt < self.point_click_max_refreshes and self._click_point_click_refresh(driver):
+                            self.capture_state(driver, f"tencent_point_click_refresh_{attempt + 1}")
+                            continue
+                        return False
+                    average_score, points = solutions[0]
+                    logging.info(
+                        "Trying point-click image solution after %s refresh(es): points=%s average_score=%.3f",
+                        attempt,
+                        [(round(x, 1), round(y, 1), round(score, 3)) for x, y, score in points],
+                        average_score,
+                    )
                 bg_rect = bg_element.rect
                 x_scale = bg_rect["width"] / bg_image.width
                 y_scale = bg_rect["height"] / bg_image.height

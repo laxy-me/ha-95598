@@ -71,6 +71,10 @@ export CAPTCHA_POINT_CLICK_MAX_REFRESHES="$(json_get captcha_point_click_max_ref
 export LOGIN_FALLBACK="$(json_get login_fallback qrcode)"
 export QR_CODE_LOGIN_REFRESH_LIMIT="$(json_get qr_code_login_refresh_limit 1)"
 export TRACE_RETENTION_DAYS="$(json_get trace_retention_days 7)"
+export LLM_API_KEY="$(json_get llm_api_key "")"
+export LLM_PROVIDER="$(json_get llm_provider zhipu)"
+export LLM_MODEL="$(json_get llm_model "")"
+export LLM_BASE_URL="$(json_get llm_base_url "")"
 
 LOGIN_CREDENTIALS_JSON="$(json_dump login_credentials)"
 if [[ "${LOGIN_CREDENTIALS_JSON}" != "[]" ]]; then
