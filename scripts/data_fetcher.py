@@ -128,8 +128,9 @@ class DataFetcher:
             "daily": 4,
             "tou": 5,
             "persist": 6,
-            "billing": 7,
-            "complete": 8,
+            "tou_backfill": 7,
+            "billing": 8,
+            "complete": 9,
         }
         current_stage = (progress or {}).get("stage", "none")
         return stage_order.get(current_stage, 0) >= stage_order.get(stage, 0)
