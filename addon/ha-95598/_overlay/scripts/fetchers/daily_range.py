@@ -119,6 +119,7 @@ class DailyRangeFetchService:
             for row in sorted(rows, key=lambda item: item["date"]):
                 row_date = row["date"]
                 month_usage_before = self.db.get_month_total_usage_before(row_date)
+                year_usage_before = self.db.get_year_total_usage_before(row_date)
                 total_charge = self.tou_price_resolver.calculate_daily_charge(
                     row_date,
                     row.get("valley_usage"),
@@ -126,6 +127,7 @@ class DailyRangeFetchService:
                     row.get("peak_usage"),
                     row.get("tip_usage"),
                     month_usage_before,
+                    year_usage_before,
                 )
                 if total_charge is not None:
                     total_charge = round(total_charge, 2)

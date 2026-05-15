@@ -961,6 +961,7 @@ class DataFetcher:
                 # rather than whatever rate was active when this row was
                 # first persisted.
                 month_before = db.get_month_total_usage_before(date)
+                year_before = db.get_year_total_usage_before(date)
                 charge = self.tou_price_resolver.calculate_daily_charge(
                     date,
                     row.get("valley_usage"),
@@ -968,6 +969,7 @@ class DataFetcher:
                     row.get("peak_usage"),
                     row.get("tip_usage"),
                     month_before,
+                    year_before,
                 )
                 ok = db.insert_daily_data(
                     {
@@ -1020,8 +1022,9 @@ class DataFetcher:
             updated = 0
             for date, valley, flat, peak, tip in rows:
                 month_before = db.get_month_total_usage_before(date)
+                year_before = db.get_year_total_usage_before(date)
                 charge = self.tou_price_resolver.calculate_daily_charge(
-                    date, valley, flat, peak, tip, month_before,
+                    date, valley, flat, peak, tip, month_before, year_before,
                 )
                 if charge is None:
                     continue

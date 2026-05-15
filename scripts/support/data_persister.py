@@ -30,6 +30,7 @@ class DataPersister:
         peak_usage,
         tip_usage,
         month_usage_before,
+        year_usage_before=None,
     ):
         if last_daily_date is None:
             return None
@@ -43,6 +44,7 @@ class DataPersister:
             peak_usage,
             tip_usage,
             month_usage_before,
+            year_usage_before,
         )
         if daily_charge is not None:
             logging.info("Calculated daily TOU charge for %s: %.2f CNY", last_daily_date, daily_charge)
@@ -128,6 +130,7 @@ class DataPersister:
                     if not daily_row or daily_row.get("total_usage") is None:
                         continue
                     month_usage_before = self.db.get_month_total_usage_before(row_date)
+                    year_usage_before = self.db.get_year_total_usage_before(row_date)
                     row_charge = self.tou_price_resolver.calculate_daily_charge(
                         row_date,
                         tou_values.get("valley_usage"),
@@ -135,6 +138,7 @@ class DataPersister:
                         tou_values.get("peak_usage"),
                         tou_values.get("tip_usage"),
                         month_usage_before,
+                        year_usage_before,
                     )
                     self.db.insert_daily_data(
                         {
@@ -155,6 +159,7 @@ class DataPersister:
                         tip_usage = tou_values.get("tip_usage", 0.0)
             else:
                 month_usage_before = self.db.get_month_total_usage_before(last_daily_date) if last_daily_date else 0.0
+                year_usage_before = self.db.get_year_total_usage_before(last_daily_date) if last_daily_date else 0.0
                 last_daily_charge = self._calculate_latest_daily_charge(
                     last_daily_date,
                     valley_usage,
@@ -162,6 +167,7 @@ class DataPersister:
                     peak_usage,
                     tip_usage,
                     month_usage_before,
+                    year_usage_before,
                 )
                 if last_daily_date and last_daily_usage is not None and last_daily_charge is not None:
                     self.db.insert_daily_data(

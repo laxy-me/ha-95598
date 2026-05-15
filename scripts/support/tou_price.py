@@ -15,6 +15,7 @@ class TariffSelection:
     version: str
     season_rule_name: str
     tiers: list[dict[str, Any]]
+    tier_scope: str = "month"  # "month" or "year" — accumulator window for tier ladder
 
 
 class TimeOfUsePriceResolver:
@@ -83,10 +84,51 @@ class TimeOfUsePriceResolver:
         valley = _f("TOU_VALLEY_RATE", peak)
         flat = _f("TOU_FLAT_RATE", peak)
         tip = _f("TOU_TIP_RATE", peak)
-        logging.info(
-            "TOU rate env override active: peak=%.4f valley=%.4f flat=%.4f tip=%.4f",
-            peak, valley, flat, tip,
-        )
+
+        # Optional ladder tiers (e.g. 江苏 居民阶梯电价):
+        #   tier 1: usage 0..tier_2_limit   → base rates
+        #   tier 2: usage ..tier_3_limit    → base rates + tier_2_surcharge
+        #   tier 3: usage >= tier_3_limit   → base rates + tier_3_surcharge
+        tier_scope = (os.getenv("TOU_TIER_SCOPE") or "month").strip().lower()
+        if tier_scope not in ("month", "year"):
+            tier_scope = "month"
+        tier_2_limit = _f("TOU_TIER_2_LIMIT_KWH", 0.0)
+        tier_3_limit = _f("TOU_TIER_3_LIMIT_KWH", 0.0)
+        tier_2_surcharge = _f("TOU_TIER_2_SURCHARGE", 0.0)
+        tier_3_surcharge = _f("TOU_TIER_3_SURCHARGE", 0.0)
+
+        def _rates(surcharge: float) -> dict[str, float]:
+            return {
+                "valley": valley + surcharge,
+                "flat": flat + surcharge,
+                "peak": peak + surcharge,
+                "tip": tip + surcharge,
+            }
+
+        tiers: list[dict[str, Any]] = []
+        if tier_2_limit > 0:
+            tiers.append({"up_to": tier_2_limit, "rates": _rates(0.0)})
+            if tier_3_limit > tier_2_limit:
+                tiers.append({"up_to": tier_3_limit, "rates": _rates(tier_2_surcharge)})
+                tiers.append({"up_to": None, "rates": _rates(tier_3_surcharge)})
+            else:
+                tiers.append({"up_to": None, "rates": _rates(tier_2_surcharge)})
+        else:
+            tiers.append({"up_to": None, "rates": _rates(0.0)})
+
+        if len(tiers) > 1:
+            logging.info(
+                "TOU rate env override active: peak=%.4f valley=%.4f flat=%.4f tip=%.4f "
+                "scope=%s tier2=%.1fkWh(+%.4f) tier3=%.1fkWh(+%.4f)",
+                peak, valley, flat, tip, tier_scope,
+                tier_2_limit, tier_2_surcharge,
+                tier_3_limit, tier_3_surcharge,
+            )
+        else:
+            logging.info(
+                "TOU rate env override active: peak=%.4f valley=%.4f flat=%.4f tip=%.4f (single tier)",
+                peak, valley, flat, tip,
+            )
         return {
             "versions": [
                 {
@@ -97,17 +139,8 @@ class TimeOfUsePriceResolver:
                         {
                             "name": "all_year",
                             "months": list(range(1, 13)),
-                            "tiers": [
-                                {
-                                    "up_to": None,
-                                    "rates": {
-                                        "valley": valley,
-                                        "flat": flat,
-                                        "peak": peak,
-                                        "tip": tip,
-                                    },
-                                }
-                            ],
+                            "tier_scope": tier_scope,
+                            "tiers": tiers,
                         }
                     ],
                 }
@@ -133,6 +166,7 @@ class TimeOfUsePriceResolver:
                     version=version.get("version", ""),
                     season_rule_name=season_rule.get("name", ""),
                     tiers=season_rule.get("tiers", []),
+                    tier_scope=(season_rule.get("tier_scope") or "month").strip().lower(),
                 )
         return None
 
@@ -144,6 +178,7 @@ class TimeOfUsePriceResolver:
         peak_usage: Any,
         tip_usage: Any,
         month_usage_before: Any = 0,
+        year_usage_before: Any = None,
     ) -> Optional[float]:
         selection = self.get_selection_for_date(date_text)
         if selection is None:
@@ -155,6 +190,7 @@ class TimeOfUsePriceResolver:
             peak = float(peak_usage or 0)
             tip = float(tip_usage or 0)
             month_before = float(month_usage_before or 0)
+            year_before = float(year_usage_before) if year_usage_before is not None else None
         except (TypeError, ValueError):
             logging.warning("Failed to parse TOU usage values for %s", date_text)
             return None
@@ -167,6 +203,14 @@ class TimeOfUsePriceResolver:
         if total_usage <= 0:
             return 0.0
 
+        # Pick accumulator-before-this-day based on tier scope:
+        # provinces with a per-year ladder (江苏, 上海, ...) need the
+        # year-to-date cumulative kWh; per-month ladder uses month.
+        if selection.tier_scope == "year" and year_before is not None:
+            cumulative_before = year_before
+        else:
+            cumulative_before = month_before
+
         proportions = {
             "valley": valley / total_usage,
             "flat": flat / total_usage,
@@ -175,7 +219,7 @@ class TimeOfUsePriceResolver:
         }
 
         remaining_total = total_usage
-        current_usage = month_before
+        current_usage = cumulative_before
         total = 0.0
 
         for tier in selection.tiers:

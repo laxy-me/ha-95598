@@ -1,5 +1,5 @@
 name: "95598 for Home Assistant (laxy fork)"
-version: "0.1.7"
+version: "0.1.8"
 slug: "ha_95598"
 description: "Sync 95598 electricity data to Home Assistant (PID 1 fix + LLM vision captcha solver)"
 url: "https://github.com/laxy-me/ha-95598"
@@ -69,6 +69,15 @@ options:
   tou_valley_rate: 0
   tou_flat_rate: 0
   tou_tip_rate: 0
+  # Optional ladder (阶梯电价). Set tou_tier_2_limit_kwh to a non-zero
+  # threshold (e.g. 2760 for 江苏 居民) to enable. Surcharge fields are
+  # the per-kWh increment applied uniformly across peak / valley / flat
+  # / tip. Leave limits at 0 for a single-tier plan.
+  tou_tier_scope: "year"
+  tou_tier_2_limit_kwh: 0
+  tou_tier_3_limit_kwh: 0
+  tou_tier_2_surcharge: 0
+  tou_tier_3_surcharge: 0
 schema:
   account: str
   password: password
@@ -106,3 +115,8 @@ schema:
   tou_valley_rate: float(0,10)?
   tou_flat_rate: float(0,10)?
   tou_tip_rate: float(0,10)?
+  tou_tier_scope: list(year|month)?
+  tou_tier_2_limit_kwh: float(0,100000)?
+  tou_tier_3_limit_kwh: float(0,100000)?
+  tou_tier_2_surcharge: float(0,10)?
+  tou_tier_3_surcharge: float(0,10)?

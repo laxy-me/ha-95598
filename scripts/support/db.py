@@ -169,6 +169,31 @@ class SqliteDB:
     def insert_yearly_data(self, data: dict) -> bool:
         return self._upsert_period_data(self.YEARLY_TABLE, "year", data)
 
+    def get_year_total_usage_before(self, date_text: str) -> float:
+        """Sum of daily total_usage in the same year, BEFORE date_text.
+        Used for province-level yearly tier ladders."""
+        if self.connect is None or self.user_id is None:
+            logging.error("Database connection is not established.")
+            return 0.0
+
+        year = str(date_text).strip()[:4]
+        cursor = self.connect.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT COALESCE(SUM(total_usage), 0)
+                FROM {self.DAILY_TABLE}
+                WHERE user_id = ?
+                  AND substr(date, 1, 4) = ?
+                  AND date < ?
+                """,
+                (self.user_id, year, date_text),
+            )
+            row = cursor.fetchone()
+            return float(row[0]) if row else 0.0
+        finally:
+            cursor.close()
+
     def get_month_total_usage_before(self, date_text: str) -> float:
         if self.connect is None or self.user_id is None:
             logging.error("Database connection is not established.")

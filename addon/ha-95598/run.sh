@@ -96,6 +96,24 @@ if [[ "${TOU_PEAK_RATE_VALUE}" != "0" && "${TOU_PEAK_RATE_VALUE}" != "0.0" ]]; t
   if [[ "${TOU_TIP_RATE_VALUE}" != "0" && "${TOU_TIP_RATE_VALUE}" != "0.0" ]]; then
     export TOU_TIP_RATE="${TOU_TIP_RATE_VALUE}"
   fi
+  # 阶梯电价 ladder
+  export TOU_TIER_SCOPE="$(json_get tou_tier_scope month)"
+  TIER2_LIMIT="$(json_get tou_tier_2_limit_kwh 0)"
+  if [[ "${TIER2_LIMIT}" != "0" && "${TIER2_LIMIT}" != "0.0" ]]; then
+    export TOU_TIER_2_LIMIT_KWH="${TIER2_LIMIT}"
+    TIER3_LIMIT="$(json_get tou_tier_3_limit_kwh 0)"
+    if [[ "${TIER3_LIMIT}" != "0" && "${TIER3_LIMIT}" != "0.0" ]]; then
+      export TOU_TIER_3_LIMIT_KWH="${TIER3_LIMIT}"
+    fi
+    SURCHARGE2="$(json_get tou_tier_2_surcharge 0)"
+    if [[ "${SURCHARGE2}" != "0" && "${SURCHARGE2}" != "0.0" ]]; then
+      export TOU_TIER_2_SURCHARGE="${SURCHARGE2}"
+    fi
+    SURCHARGE3="$(json_get tou_tier_3_surcharge 0)"
+    if [[ "${SURCHARGE3}" != "0" && "${SURCHARGE3}" != "0.0" ]]; then
+      export TOU_TIER_3_SURCHARGE="${SURCHARGE3}"
+    fi
+  fi
 fi
 
 LOGIN_CREDENTIALS_JSON="$(json_dump login_credentials)"
