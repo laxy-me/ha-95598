@@ -327,6 +327,38 @@ class SqliteDB:
         finally:
             cursor.close()
 
+    def get_last_month_summary(self) -> dict[str, Any] | None:
+        """Return the most recently completed month's totals.
+
+        "Most recently completed" = most recent row in monthly_usage
+        whose month != current YYYY-MM. Used by the last-month sensor.
+        """
+        if self.connect is None or self.user_id is None:
+            logging.error("Database connection is not established.")
+            return None
+        cursor = self.connect.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT month, total_usage, COALESCE(total_charge, 0)
+                FROM monthly_usage
+                WHERE user_id = ? AND month < strftime('%Y-%m', 'now')
+                ORDER BY month DESC
+                LIMIT 1
+                """,
+                (self.user_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "month": row[0],
+                "usage": round(self._safe_float(row[1], default=0.0), 2),
+                "charge": round(self._safe_float(row[2], default=0.0), 2),
+            }
+        finally:
+            cursor.close()
+
     def get_total_monthly_summary(self) -> dict[str, Optional[float]] | None:
         if self.connect is None or self.user_id is None:
             logging.error("Database connection is not established.")

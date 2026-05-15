@@ -6,6 +6,7 @@ from datetime import datetime
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
+from scripts.fetchers.vue_daily_range import VueDailyRangeCollector
 from scripts.fetchers.vue_state import (
     normalize_balance,
     normalize_bill_detail,
@@ -700,6 +701,23 @@ class DataFetcher:
             updater.save_partial_data(user_id, last_daily_charge=last_daily_charge)
             updater.update_progress_stage(user_id, "persist", fetch_date=self._progress_date())
             progress = updater.get_progress(user_id)
+
+            # Backfill TOU breakdown for days that have aged out of the
+            # "recent 7-day" window. The 95598 daily Vue state only
+            # exposes thisPPq / thisVPq for the most recent 7 days; older
+            # rows in our DB carry peak/valley=0. Pull TOU for the prior
+            # range via the date-range Vue query so dashboards (and the
+            # monthly bill TOU calculator) see correct numbers.
+            if not self._has_completed_stage(progress, "tou_backfill"):
+                try:
+                    self._backfill_historic_daily_tou(driver, user_id, days=30)
+                    updater.update_progress_stage(user_id, "tou_backfill", fetch_date=self._progress_date())
+                    progress = updater.get_progress(user_id)
+                except Exception as exc:
+                    logging.warning(
+                        "Historic daily TOU backfill failed for %s (continuing): %s",
+                        user_id, exc,
+                    )
         else:
             logging.info("db is None, we will not store the data to the database.")
 
@@ -821,6 +839,64 @@ class DataFetcher:
             yearly_charge = None
 
         return yearly_usage, yearly_charge
+
+    def _backfill_historic_daily_tou(self, driver, user_id: str, days: int = 30) -> None:
+        """Use the date-range Vue query to refresh TOU breakdown for the
+        last ``days`` days. Persists each row via ``insert_daily_data``
+        which COALESCEs the TOU fields, so existing values are only
+        overwritten when the range query gives a real number.
+        """
+        if self.db is None:
+            return
+        from datetime import datetime, timedelta
+        today = datetime.now().date()
+        start = (today - timedelta(days=days)).isoformat()
+        end = today.isoformat()
+
+        collector = VueDailyRangeCollector(
+            click_button=self._click_button,
+            step_sleep=self._step_sleep,
+            log_page_state=self._log_page_state,
+        )
+        rows = collector.collect(driver, start, end)
+        if not rows:
+            logging.info("Historic TOU backfill: no rows returned for %s..%s", start, end)
+            return
+
+        from scripts.support.db import SqliteDB
+        db = SqliteDB()
+        if not db.connect_user_db(user_id):
+            return
+        try:
+            persisted = 0
+            for row in rows:
+                date = row.get("date")
+                if not date:
+                    continue
+                total_usage = (
+                    float(row.get("valley_usage") or 0)
+                    + float(row.get("flat_usage") or 0)
+                    + float(row.get("peak_usage") or 0)
+                    + float(row.get("tip_usage") or 0)
+                )
+                ok = db.insert_daily_data(
+                    {
+                        "date": date,
+                        "total_usage": total_usage or float(row.get("total_usage") or 0),
+                        "valley_usage": row.get("valley_usage", 0.0),
+                        "flat_usage": row.get("flat_usage", 0.0),
+                        "peak_usage": row.get("peak_usage", 0.0),
+                        "tip_usage": row.get("tip_usage", 0.0),
+                    }
+                )
+                if ok:
+                    persisted += 1
+            logging.info(
+                "Historic TOU backfill for %s: collected=%s persisted=%s range=%s..%s",
+                user_id, len(rows), persisted, start, end,
+            )
+        finally:
+            db.close_connect()
 
     def _get_yesterday_usage(self, driver):
         """获取最近一次用电量"""

@@ -82,6 +82,25 @@ export QR_CODE_PUBLIC_URL="$(json_get qr_code_public_url "")"
 # user-installed git add-ons, so we go through /share instead.
 export QR_CODE_PUBLIC_PATH="/share/95598_qr.png"
 
+# TOU rate override: only export when user actually set a nonzero peak rate.
+# Otherwise leave unset so tou_price.py falls back to the JSON config file.
+TOU_PEAK_RATE_VALUE="$(json_get tou_peak_rate 0)"
+if [[ "${TOU_PEAK_RATE_VALUE}" != "0" && "${TOU_PEAK_RATE_VALUE}" != "0.0" ]]; then
+  export TOU_PEAK_RATE="${TOU_PEAK_RATE_VALUE}"
+  TOU_VALLEY_RATE_VALUE="$(json_get tou_valley_rate 0)"
+  if [[ "${TOU_VALLEY_RATE_VALUE}" != "0" && "${TOU_VALLEY_RATE_VALUE}" != "0.0" ]]; then
+    export TOU_VALLEY_RATE="${TOU_VALLEY_RATE_VALUE}"
+  fi
+  TOU_FLAT_RATE_VALUE="$(json_get tou_flat_rate 0)"
+  if [[ "${TOU_FLAT_RATE_VALUE}" != "0" && "${TOU_FLAT_RATE_VALUE}" != "0.0" ]]; then
+    export TOU_FLAT_RATE="${TOU_FLAT_RATE_VALUE}"
+  fi
+  TOU_TIP_RATE_VALUE="$(json_get tou_tip_rate 0)"
+  if [[ "${TOU_TIP_RATE_VALUE}" != "0" && "${TOU_TIP_RATE_VALUE}" != "0.0" ]]; then
+    export TOU_TIP_RATE="${TOU_TIP_RATE_VALUE}"
+  fi
+fi
+
 LOGIN_CREDENTIALS_JSON="$(json_dump login_credentials)"
 if [[ "${LOGIN_CREDENTIALS_JSON}" != "[]" ]]; then
   export LOGIN_CREDENTIALS="${LOGIN_CREDENTIALS_JSON}"

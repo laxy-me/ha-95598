@@ -35,6 +35,12 @@ class TimeOfUsePriceResolver:
     def _load_config(self) -> dict[str, Any]:
         if self._config_cache is not None:
             return self._config_cache
+
+        env_config = self._config_from_env()
+        if env_config is not None:
+            self._config_cache = env_config
+            return self._config_cache
+
         if not self.config_path.exists():
             logging.warning("TOU price config not found: %s", self.config_path)
             self._config_cache = {"versions": []}
@@ -43,6 +49,70 @@ class TimeOfUsePriceResolver:
         with open(self.config_path, "r", encoding="utf-8") as file:
             self._config_cache = json.load(file)
         return self._config_cache
+
+    @staticmethod
+    def _config_from_env() -> Optional[dict[str, Any]]:
+        """If TOU_PEAK_RATE / TOU_VALLEY_RATE etc are set, synthesize a
+        single-tier all-year config from them. This lets users skip the
+        per-province example config file and just put the two rates from
+        their bill into the add-on options.
+
+        Set ``TOU_PEAK_RATE`` to enable. ``TOU_VALLEY_RATE``,
+        ``TOU_FLAT_RATE``, ``TOU_TIP_RATE`` default to the peak rate
+        when unset (works for households with peak/valley only).
+        """
+        peak_raw = (os.getenv("TOU_PEAK_RATE") or "").strip()
+        if not peak_raw:
+            return None
+        try:
+            peak = float(peak_raw)
+        except ValueError:
+            logging.warning("TOU_PEAK_RATE %r is not a number; ignoring env override.", peak_raw)
+            return None
+
+        def _f(name: str, default: float) -> float:
+            raw = (os.getenv(name) or "").strip()
+            if not raw:
+                return default
+            try:
+                return float(raw)
+            except ValueError:
+                logging.warning("%s %r is not a number; using %s.", name, raw, default)
+                return default
+
+        valley = _f("TOU_VALLEY_RATE", peak)
+        flat = _f("TOU_FLAT_RATE", peak)
+        tip = _f("TOU_TIP_RATE", peak)
+        logging.info(
+            "TOU rate env override active: peak=%.4f valley=%.4f flat=%.4f tip=%.4f",
+            peak, valley, flat, tip,
+        )
+        return {
+            "versions": [
+                {
+                    "version": "env_override",
+                    "validfrom": "1970-01-01",
+                    "validuntil": "2099-12-31",
+                    "season_rules": [
+                        {
+                            "name": "all_year",
+                            "months": list(range(1, 13)),
+                            "tiers": [
+                                {
+                                    "up_to": None,
+                                    "rates": {
+                                        "valley": valley,
+                                        "flat": flat,
+                                        "peak": peak,
+                                        "tip": tip,
+                                    },
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }
 
     def get_selection_for_date(self, date_text: str) -> Optional[TariffSelection]:
         if not date_text:

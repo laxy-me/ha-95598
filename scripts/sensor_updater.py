@@ -17,6 +17,8 @@ from scripts.const import (
     DAILY_HISTORY_SENSOR_NAME,
     DAILY_USAGE_SENSOR_NAME,
     FLAT_USAGE_SENSOR_NAME,
+    LAST_MONTH_CHARGE_SENSOR_NAME,
+    LAST_MONTH_USAGE_SENSOR_NAME,
     MONTH_CHARGE_SENSOR_NAME,
     MONTH_FLAT_USAGE_SENSOR_NAME,
     MONTH_PEAK_USAGE_SENSOR_NAME,
@@ -263,8 +265,49 @@ class SensorUpdater:
             self.update_tou_data(user_id, postfix, last_daily_date, valley_usage, flat_usage, peak_usage, tip_usage)
             self.update_period_tou_data(user_id, postfix)
 
+        self.update_last_month_data(user_id, postfix)
+
         logging.info(f"User {user_id} state-refresh task run successfully!")
         self._mirror_db_to_share()
+
+    def update_last_month_data(self, user_id: str, postfix: str) -> None:
+        """Publish the most recently completed month's totals as
+        sensor.last_month_electricity_(usage|charge)."""
+        db = self._ensure_db(user_id)
+        if db is None:
+            return
+        summary = db.get_last_month_summary()
+        if summary is None:
+            return
+        usage_sensor = LAST_MONTH_USAGE_SENSOR_NAME + postfix
+        charge_sensor = LAST_MONTH_CHARGE_SENSOR_NAME + postfix
+        self._publish_sensor_state(
+            usage_sensor,
+            user_id,
+            summary["usage"],
+            unit=USAGE_UNIT,
+            icon="mdi:calendar-month-outline",
+            device_class="energy",
+            state_class="measurement",
+            extra_attributes={"period": summary["month"]},
+        )
+        logging.info(
+            "Homeassistant sensor %s state updated: %s kWh (period=%s)",
+            usage_sensor, summary["usage"], summary["month"],
+        )
+        self._publish_sensor_state(
+            charge_sensor,
+            user_id,
+            summary["charge"],
+            unit=BALANCE_UNIT,
+            icon="mdi:cash-clock",
+            device_class="monetary",
+            extra_attributes={"period": summary["month"]},
+        )
+        logging.info(
+            "Homeassistant sensor %s state updated: %s CNY (period=%s)",
+            charge_sensor, summary["charge"], summary["month"],
+        )
 
     def _mirror_db_to_share(self) -> None:
         """Copy fork's SQLite to /share/95598.db so HA Core can read it.

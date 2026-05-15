@@ -16,6 +16,8 @@ YEARLY_USAGE_SENSOR_NAME = "sensor.yearly_electricity_usage"
 YEARLY_CHARGE_SENSOR_NAME = "sensor.yearly_electricity_charge"
 MONTH_USAGE_SENSOR_NAME = "sensor.month_electricity_usage"
 MONTH_CHARGE_SENSOR_NAME = "sensor.month_electricity_charge"
+LAST_MONTH_USAGE_SENSOR_NAME = "sensor.last_month_electricity_usage"
+LAST_MONTH_CHARGE_SENSOR_NAME = "sensor.last_month_electricity_charge"
 VALLEY_USAGE_SENSOR_NAME = "sensor.last_valley_electricity_usage"
 FLAT_USAGE_SENSOR_NAME = "sensor.last_flat_electricity_usage"
 PEAK_USAGE_SENSOR_NAME = "sensor.last_peak_electricity_usage"
@@ -41,6 +43,8 @@ SENSOR_FRIENDLY_LABELS = {
     DAILY_HISTORY_SENSOR_NAME: "日用电历史",
     MONTH_USAGE_SENSOR_NAME: "本月电量",
     MONTH_CHARGE_SENSOR_NAME: "本月电费",
+    LAST_MONTH_USAGE_SENSOR_NAME: "上月电量",
+    LAST_MONTH_CHARGE_SENSOR_NAME: "上月电费",
     YEARLY_USAGE_SENSOR_NAME: "本年电量",
     YEARLY_CHARGE_SENSOR_NAME: "本年电费",
     VALLEY_USAGE_SENSOR_NAME: "最新日电量-谷",
