@@ -185,6 +185,13 @@ class SensorUpdater:
             "icon": icon,
             "state_class": state_class,
         }
+        # For total / total_increasing sensors carrying a last_reset
+        # attribute in their state payload, tell HA MQTT how to extract
+        # it so HA Statistics / Energy Dashboard treat resets correctly.
+        if state_class in ("total", "total_increasing"):
+            payload["last_reset_value_template"] = (
+                "{{ value_json.last_reset if value_json.last_reset is defined else '' }}"
+            )
         if unit:
             payload["unit_of_measurement"] = unit
         if device_class:
@@ -648,8 +655,9 @@ class SensorUpdater:
             period = datetime.now().strftime("%Y-%m")
         # Resets at the start of each month. state_class=total +
         # explicit last_reset lets HA's Statistics integration roll
-        # this into the Energy dashboard correctly.
-        last_reset = datetime.now().replace(
+        # this into the Energy dashboard correctly. Must be ISO with
+        # tz; use local time + offset so HA picks it up exactly.
+        last_reset = datetime.now().astimezone().replace(
             day=1, hour=0, minute=0, second=0, microsecond=0,
         ).isoformat()
         self._publish_sensor_state(
@@ -675,11 +683,9 @@ class SensorUpdater:
             if usage
             else YEARLY_CHARGE_SENSOR_NAME + postfix
         )
-        if datetime.now().month == 1:
-            last_year = datetime.now().year -1
-            last_reset = datetime.now().replace(year=last_year).strftime("%Y")
-        else:
-            last_reset = datetime.now().strftime("%Y")
+        last_reset = datetime.now().astimezone().replace(
+            month=1, day=1, hour=0, minute=0, second=0, microsecond=0,
+        ).isoformat()
         self._publish_sensor_state(
             sensorName,
             user_id,
@@ -687,7 +693,7 @@ class SensorUpdater:
             unit="kWh" if usage else "CNY",
             icon="mdi:lightning-bolt" if usage else "mdi:cash",
             device_class="energy" if usage else "monetary",
-            state_class="total_increasing",
+            state_class="total",
             extra_attributes={"last_reset": last_reset},
         )
         logging.info(f"Homeassistant sensor {sensorName} state updated: {sensorState} {'kWh' if usage else 'CNY'}")
