@@ -16,11 +16,8 @@ boot: auto
 host_network: true
 build: true
 map:
-  - type: addon_config
-    read_only: false
-    path: /app/data
-  - type: homeassistant_config
-    read_only: false
+  - "addon_config:rw:/app/data"
+  - "homeassistant_config:rw"
 options:
   account: ""
   password: ""
