@@ -843,32 +843,63 @@ class DataFetcher:
     def _backfill_historic_daily_tou(self, driver, user_id: str, days: int = 7) -> None:
         """Use the date-range Vue query to refresh TOU breakdown for the
         last ``days`` days (matches the user's daily_usage_window_days
-        option). Persists each row via ``insert_daily_data`` which
-        COALESCEs the TOU fields, so existing values are only overwritten
-        when the range query gives a real number.
+        option). Only fires for dates that DON'T have any TOU breakdown
+        in the DB yet (peak+valley+flat+tip == 0) — already-settled
+        historic days are immutable and don't need to be re-queried.
+        Persists each row via ``insert_daily_data`` which COALESCEs
+        the TOU fields, so existing values are only overwritten when
+        the range query gives a real number.
         """
         if self.db is None:
             return
         from datetime import datetime, timedelta
         today = datetime.now().date()
-        start = (today - timedelta(days=days)).isoformat()
-        end = today.isoformat()
-
-        collector = VueDailyRangeCollector(
-            click_button=self._click_button,
-            step_sleep=self._step_sleep,
-            log_page_state=self._log_page_state,
-        )
-        rows = collector.collect(driver, start, end)
-        if not rows:
-            logging.info("Historic TOU backfill: no rows returned for %s..%s", start, end)
-            return
+        window_start = (today - timedelta(days=days)).isoformat()
+        # today's row is updated by the main daily fetch step, skip here.
+        today_str = today.isoformat()
 
         from scripts.support.db import SqliteDB
         db = SqliteDB()
         if not db.connect_user_db(user_id):
             return
         try:
+            cursor = db.connect.cursor()
+            cursor.execute(
+                f"""
+                SELECT date FROM {db.DAILY_TABLE}
+                WHERE user_id = ? AND date >= ? AND date < ?
+                  AND (COALESCE(peak_usage, 0) + COALESCE(valley_usage, 0)
+                       + COALESCE(flat_usage, 0) + COALESCE(tip_usage, 0)) = 0
+                ORDER BY date
+                """,
+                (db.user_id, window_start, today_str),
+            )
+            unsettled = [r[0] for r in cursor.fetchall()]
+            cursor.close()
+
+            if not unsettled:
+                logging.info(
+                    "Historic TOU backfill: all daily rows in last %s days have TOU breakdown, skipping.",
+                    days,
+                )
+                return
+
+            range_start = unsettled[0]
+            range_end = unsettled[-1]
+            logging.info(
+                "Historic TOU backfill: %s dates missing TOU; querying range %s..%s",
+                len(unsettled), range_start, range_end,
+            )
+
+            collector = VueDailyRangeCollector(
+                click_button=self._click_button,
+                step_sleep=self._step_sleep,
+                log_page_state=self._log_page_state,
+            )
+            rows = collector.collect(driver, range_start, range_end)
+            if not rows:
+                logging.info("Historic TOU backfill: no rows returned for %s..%s", range_start, range_end)
+                return
             persisted = 0
             for row in rows:
                 date = row.get("date")
@@ -894,7 +925,7 @@ class DataFetcher:
                     persisted += 1
             logging.info(
                 "Historic TOU backfill for %s: collected=%s persisted=%s range=%s..%s",
-                user_id, len(rows), persisted, start, end,
+                user_id, len(rows), persisted, range_start, range_end,
             )
         finally:
             db.close_connect()
