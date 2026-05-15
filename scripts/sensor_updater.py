@@ -302,6 +302,7 @@ class SensorUpdater:
             unit=BALANCE_UNIT,
             icon="mdi:cash-clock",
             device_class="monetary",
+            state_class="total",
             extra_attributes={"period": summary["month"]},
         )
         logging.info(
