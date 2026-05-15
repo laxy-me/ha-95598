@@ -207,10 +207,13 @@ class SensorUpdater:
             "icon": icon,
             "state_class": state_class,
         }
-        # For total / total_increasing sensors carrying a last_reset
-        # attribute in their state payload, tell HA MQTT how to extract
-        # it so HA Statistics / Energy Dashboard treat resets correctly.
-        if state_class in ("total", "total_increasing"):
+        # For total (resets at explicit points) sensors carrying a
+        # last_reset attribute in their state payload, tell HA MQTT
+        # how to extract it. total_increasing sensors must NOT have
+        # last_reset_value_template — HA auto-detects resets there
+        # and an empty/missing template value would mark the entity
+        # unavailable.
+        if state_class == "total":
             payload["last_reset_value_template"] = (
                 "{{ value_json.last_reset if value_json.last_reset is defined else '' }}"
             )
