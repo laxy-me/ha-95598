@@ -16,6 +16,7 @@ import http.server
 import json
 import logging
 import os
+import socket
 import socketserver
 import threading
 from pathlib import Path
@@ -26,6 +27,25 @@ from scripts.state_registry import registry
 
 QR_PATH = Path("/app/data/login_qr_code.png")
 QR_LIFETIME_SECONDS = 60
+
+
+def _addon_info_url() -> str:
+    """Best-effort URL to the add-on's HA info page.
+
+    HA Supervisor names the container ``addon_<slug>`` and sets the
+    container hostname to ``<slug>`` with dashes (e.g.
+    ``e44a59f0-ha-95598``). The HA web UI path uses underscores
+    (``/config/app/e44a59f0_ha_95598/info``)."""
+    try:
+        slug = socket.gethostname().replace("-", "_")
+        if slug:
+            return f"/config/app/{slug}/info"
+    except Exception:
+        pass
+    return "/config/addons"
+
+
+_BACK_URL = _addon_info_url()
 
 _trigger_callback: Optional[Callable[[], None]] = None
 
@@ -72,7 +92,7 @@ _PAGE_HTML = (
     ".btn:not([disabled]):hover{background:#125ea0;}"
     "</style></head><body>"
     "<div class=\"topbar\">"
-    "<a class=\"back\" href=\"/lovelace\" target=\"_top\" rel=\"noopener\">"
+    f"<a class=\"back\" href=\"{_BACK_URL}\" target=\"_top\" rel=\"noopener\">"
     "<svg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\">"
     "<path d=\"M15 18l-6-6 6-6\"/></svg>返回"
     "</a>"
