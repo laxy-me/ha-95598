@@ -9,7 +9,7 @@ from scripts.data_fetcher import DataFetcher
 from scripts.sensor_updater import SensorUpdater
 from scripts.support.error_watcher import ErrorWatcher
 from scripts.support.credentials import LoginCredential, load_login_credentials
-from scripts.support.job_scheduler import run_forever, run_task, schedule_jobs
+from scripts.support.job_scheduler import run_forever, run_task, schedule_jobs, trigger_manual_fetch
 from scripts.support.tou_price import TimeOfUsePriceResolver
 
 
@@ -53,13 +53,8 @@ def main():
         logging.error("Failed to read runtime configuration: %s", exc)
         sys.exit()
 
-    # Start the small Ingress HTTP server that serves the current QR
-    # PNG. Safe no-op when INGRESS_PORT isn't set.
-    try:
-        from scripts import qr_server
-        qr_server.start()
-    except Exception as exc:
-        logging.warning("QR server failed to start: %s", exc)
+    # ... (Ingress HTTP server is wired up later, after `fetcher` is
+    # constructed so its manual-trigger button has something to call.)
 
     # Background thread that periodically pings 95598 with persisted
     # cookies — keeps the session alive if 95598 uses sliding TTL.
@@ -83,6 +78,14 @@ def main():
     updater = SensorUpdater()
     fetcher = DataFetcher(config.credentials[0].account, config.credentials[0].password, updater=updater, credentials=config.credentials)
     schedule_jobs(fetcher, updater, config.job_start_time, config.job_times, config.retry_times_limit, config.republish_interval_minutes)
+
+    # Start the Ingress HTTP server — wire the manual-trigger button to
+    # fetch the freshly-built `fetcher`.
+    try:
+        from scripts import qr_server
+        qr_server.start(on_trigger=lambda: trigger_manual_fetch(fetcher, config.retry_times_limit))
+    except Exception as exc:
+        logging.warning("QR server failed to start: %s", exc)
 
     republished = updater.republish()
     if republished and updater.should_skip_startup_fetch():

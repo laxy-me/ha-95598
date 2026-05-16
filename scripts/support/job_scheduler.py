@@ -1,5 +1,6 @@
 import logging
 import random
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -7,9 +8,15 @@ from pathlib import Path
 import schedule
 
 from captcha_solver.replay import auto_replay_once
+from scripts.state_registry import registry as state_registry
 
 
 DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+
+# Serialize all fetch attempts — scheduled jobs share a single lock with
+# the manual Ingress trigger so we never start a second selenium driver
+# while one is mid-login.
+_run_task_lock = threading.Lock()
 
 
 def schedule_jobs(fetcher, updater, job_start_time: str, job_times: int, retry_times_limit: int, republish_interval_minutes: int) -> None:
@@ -30,6 +37,10 @@ def schedule_jobs(fetcher, updater, job_start_time: str, job_times: int, retry_t
 
 
 def run_task(data_fetcher, retry_times_limit: int):
+    if not _run_task_lock.acquire(blocking=False):
+        logging.info("Skip fetch — another fetch task is already running.")
+        return
+    state_registry.set_state(state_registry.RUNNING)
     try:
         for retry_times in range(1, retry_times_limit + 1):
             try:
@@ -42,7 +53,29 @@ def run_task(data_fetcher, retry_times_limit: int):
                     retry_times_limit - retry_times,
                 )
     finally:
+        # Revert UI to idle only if a successful login didn't already
+        # bump state to LOGGED_IN.
+        snap = state_registry.snapshot()
+        if snap["state"] != state_registry.LOGGED_IN:
+            state_registry.set_state(state_registry.IDLE)
         auto_replay_once(DATA_DIR)
+        _run_task_lock.release()
+
+
+def trigger_manual_fetch(data_fetcher, retry_times_limit: int) -> bool:
+    """Spawn a fetch in a worker thread. Returns False if one is already
+    running (the lock acquisition in run_task will fast-reject)."""
+    if _run_task_lock.locked():
+        logging.info("Manual fetch trigger ignored — a fetch is already in progress.")
+        return False
+    logging.info("Manual fetch triggered from Ingress UI.")
+    threading.Thread(
+        target=run_task,
+        args=(data_fetcher, retry_times_limit),
+        daemon=True,
+        name="manual-fetch",
+    ).start()
+    return True
 
 
 def run_forever() -> None:

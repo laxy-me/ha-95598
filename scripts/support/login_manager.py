@@ -12,6 +12,7 @@ from selenium.webdriver.support.wait import WebDriverWait
 
 from captcha_solver.tencent import TencentCaptchaHandler
 from scripts.const import BALANCE_URL, LOGIN_URL
+from scripts.state_registry import registry as state_registry
 from scripts.support.credentials import LoginCredential, mask_account
 from scripts.support.error_watcher import ErrorWatcher
 from scripts.support.notifier import build_notifier
@@ -81,6 +82,8 @@ class LoginManager:
 
     def log_login_success(self, driver) -> None:
         logging.info("Login success via %s on %s", self.login_method, LOGIN_URL)
+        state_registry.set_login_method(self.login_method)
+        state_registry.set_state(state_registry.LOGGED_IN)
         if driver is not None:
             self.session_manager.save(driver)
 
@@ -286,6 +289,7 @@ class LoginManager:
                 if post_login_state == "limit_exceeded":
                     unlock_at = time.time() + self._PASSWORD_LOCKOUT_TTL_SECONDS
                     self._password_login_locked[self._account] = unlock_at
+                    state_registry.set_lockout_until(unlock_at)
                     logging.warning(
                         "95598 hit daily password-login cap for %s: %s. "
                         "Locking out password login until %s (24h TTL) — using QR-code fallback "
@@ -369,6 +373,7 @@ class LoginManager:
             with open(qr_code_path, "wb") as file:
                 file.write(img_screenshot)
                 logging.info("save qrcode to %s", qr_code_path)
+            state_registry.set_state(state_registry.WAITING_QR)
 
             if self.notifier.send_qr_code(img_screenshot):
                 logging.info("QRCode notification sent successfully.")
