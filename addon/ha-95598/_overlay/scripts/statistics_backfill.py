@@ -26,7 +26,7 @@ import json
 import logging
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -80,6 +80,50 @@ def _load_monthly_snapshots(user_id: str) -> list[tuple[str, float, float]]:
         conn.close()
 
 
+def _load_daily_snapshots(user_id: str) -> list[tuple[str, float, float]]:
+    """Return [(date_str, total_usage, total_charge), ...] sorted ascending."""
+    conn = sqlite3.connect(str(DB_PATH))
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT date, total_usage, COALESCE(total_charge, 0) "
+            "FROM daily_usage WHERE user_id = ? ORDER BY date",
+            (user_id,),
+        )
+        return [
+            (row[0], float(row[1] or 0), float(row[2] or 0))
+            for row in cur.fetchall()
+        ]
+    finally:
+        conn.close()
+
+
+def _contiguous_current_month_dailies(
+    daily_rows: list[tuple[str, float, float]],
+    current_month: str,
+) -> list[tuple[date, float, float]]:
+    """Return day rows for ``current_month`` only if they form a
+    contiguous run starting at ``YYYY-MM-01``. Otherwise return []."""
+    current = []
+    expected_first = f"{current_month}-01"
+    for date_str, day_u, day_c in daily_rows:
+        if not date_str.startswith(current_month + "-"):
+            continue
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        current.append((d, day_u, day_c))
+    if not current:
+        return []
+    current.sort(key=lambda r: r[0])
+    if current[0][0].isoformat() != expected_first:
+        return []
+    cleaned = [current[0]]
+    for entry in current[1:]:
+        if (entry[0] - cleaned[-1][0]).days != 1:
+            break
+        cleaned.append(entry)
+    return cleaned
+
+
 def _resolve_user_id() -> Optional[str]:
     conn = sqlite3.connect(str(DB_PATH))
     try:
@@ -111,38 +155,80 @@ def _previous_month_key(month_key: str) -> str:
     return f"{year:04d}-{month:02d}"
 
 
-def _build_snapshot_series(
+def _build_full_series(
     monthly_rows: list[tuple[str, float, float]],
-) -> tuple[list[tuple[datetime, float, float]], list[tuple[datetime, float, float]]]:
-    """Return (usage_points, charge_points) — each a sorted list of
-    (datetime, state, sum). state == sum == cumulative through end of
-    that month. A zero anchor is prepended at the end of the month
-    before the earliest monthly_rows entry.
+    daily_rows: list[tuple[str, float, float]],
+) -> tuple[
+    list[tuple[datetime, float, float]],
+    list[tuple[datetime, float, float]],
+    dict,
+]:
+    """Build the usage + charge statistics series and a small diag dict.
 
-    The **current** month is skipped — its row still grows over the
-    days remaining in the month, so writing its current value at the
-    "month-end" 23:00 timestamp would either collide with HA's own
-    later automated record at that timestamp or, before that timestamp
-    arrives, leave a row in the future with a state lower than what
-    HA records at intermediate hours."""
+    Series content (state == sum at every point):
+
+      1. zero anchor at the end of the month before the earliest
+         month in ``monthly_rows``;
+      2. one row at 23:00 (local) of each completed month's last day,
+         with cumulative through that month (drawn from monthly_rows);
+      3. for the *current* month, if ``daily_rows`` contains a
+         contiguous run starting at YYYY-MM-01, one row at 23:00 of
+         each such day with cumulative = (cumulative through end of
+         previous month) + (daily sum up to and including that day).
+
+    The current month's *month-end anchor* is intentionally omitted —
+    its monthly_usage row keeps growing through the live month, so a
+    fixed snapshot at YYYY-MM-31 23:00 would either land in the future
+    (and collide with HA's auto-record) or lock in a stale state.
+    """
+    diag = {
+        "current_month_daily_imported": 0,
+        "current_month_daily_skipped_reason": None,
+    }
     if not monthly_rows:
-        return [], []
+        return [], [], diag
+
     current_month = datetime.now(TZ).strftime("%Y-%m")
     completed = [row for row in monthly_rows if row[0] < current_month]
     if not completed:
-        return [], []
+        diag["current_month_daily_skipped_reason"] = "no completed months yet"
+        return [], [], diag
+
     anchor_dt = _month_end_dt(_previous_month_key(completed[0][0]))
-    usage = [(anchor_dt, 0.0, 0.0)]
-    charge = [(anchor_dt, 0.0, 0.0)]
+    usage: list[tuple[datetime, float, float]] = [(anchor_dt, 0.0, 0.0)]
+    charge: list[tuple[datetime, float, float]] = [(anchor_dt, 0.0, 0.0)]
+
     cum_u = 0.0
     cum_c = 0.0
-    for month_key, total_u, total_c in completed:
+    cum_through: dict[str, tuple[float, float]] = {}
+    for month_key, total_u, total_c in monthly_rows:
         cum_u += total_u
         cum_c += total_c
-        end = _month_end_dt(month_key)
-        usage.append((end, round(cum_u, 2), round(cum_u, 2)))
-        charge.append((end, round(cum_c, 2), round(cum_c, 2)))
-    return usage, charge
+        cum_through[month_key] = (cum_u, cum_c)
+        if month_key < current_month:
+            end = _month_end_dt(month_key)
+            usage.append((end, round(cum_u, 2), round(cum_u, 2)))
+            charge.append((end, round(cum_c, 2), round(cum_c, 2)))
+
+    # Current-month daily fill (only when contiguous from day 1).
+    prev_month = _previous_month_key(current_month)
+    start_cum = cum_through.get(prev_month, (0.0, 0.0))
+    dailies = _contiguous_current_month_dailies(daily_rows, current_month)
+    if not dailies:
+        diag["current_month_daily_skipped_reason"] = (
+            "no contiguous daily run starting at the 1st of the current month"
+        )
+    else:
+        day_cum_u = start_cum[0]
+        day_cum_c = start_cum[1]
+        for d, day_u, day_c in dailies:
+            day_cum_u += day_u
+            day_cum_c += day_c
+            end_dt = datetime.combine(d, time(23, 0), tzinfo=TZ)
+            usage.append((end_dt, round(day_cum_u, 2), round(day_cum_u, 2)))
+            charge.append((end_dt, round(day_cum_c, 2), round(day_cum_c, 2)))
+        diag["current_month_daily_imported"] = len(dailies)
+    return usage, charge, diag
 
 
 def _existing_starts(
@@ -234,8 +320,9 @@ def run_backfill(*, clear_first: bool = True) -> dict:
     monthly_rows = _load_monthly_snapshots(user_id)
     if not monthly_rows:
         return {"success": False, "error": "monthly_usage empty"}
+    daily_rows = _load_daily_snapshots(user_id)
 
-    usage_points, charge_points = _build_snapshot_series(monthly_rows)
+    usage_points, charge_points, diag = _build_full_series(monthly_rows, daily_rows)
     if not usage_points:
         return {
             "success": False,
@@ -296,6 +383,11 @@ def run_backfill(*, clear_first: bool = True) -> dict:
             "success": True,
             "user_id": user_id,
             "monthly_rows": len(monthly_rows),
+            "daily_rows": len(daily_rows),
+            "current_month_daily_imported": diag["current_month_daily_imported"],
+            "current_month_daily_skipped_reason": diag[
+                "current_month_daily_skipped_reason"
+            ],
             "cleared_first": cleared,
             "usage": {
                 "candidates": len(usage_points),
