@@ -80,10 +80,15 @@ def main():
     schedule_jobs(fetcher, updater, config.job_start_time, config.job_times, config.retry_times_limit, config.republish_interval_minutes)
 
     # Start the Ingress HTTP server — wire the manual-trigger button to
-    # fetch the freshly-built `fetcher`.
+    # fetch the freshly-built `fetcher`, and the backfill button to the
+    # statistics_backfill module.
     try:
         from scripts import qr_server
-        qr_server.start(on_trigger=lambda: trigger_manual_fetch(fetcher, config.retry_times_limit))
+        from scripts import statistics_backfill
+        qr_server.start(
+            on_trigger=lambda: trigger_manual_fetch(fetcher, config.retry_times_limit),
+            on_backfill=statistics_backfill.run_backfill,
+        )
     except Exception as exc:
         logging.warning("QR server failed to start: %s", exc)
 

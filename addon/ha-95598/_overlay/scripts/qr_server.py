@@ -48,6 +48,7 @@ def _addon_info_url() -> str:
 _BACK_URL = _addon_info_url()
 
 _trigger_callback: Optional[Callable[[], None]] = None
+_backfill_callback: Optional[Callable[[], dict]] = None
 
 
 _PAGE_HTML = (
@@ -90,6 +91,13 @@ _PAGE_HTML = (
     "box-shadow:0 2px 8px rgba(25,118,210,.25);}"
     ".btn[disabled]{background:#bbb;cursor:not-allowed;box-shadow:none;}"
     ".btn:not([disabled]):hover{background:#125ea0;}"
+    ".btn.secondary{background:#fff;color:#1976d2;"
+    "box-shadow:0 0 0 1px #1976d2 inset;}"
+    ".btn.secondary:not([disabled]):hover{background:#e3f0fb;}"
+    ".result{width:100%;max-width:380px;background:#fff;border-radius:14px;"
+    "padding:14px 18px;box-shadow:0 2px 8px rgba(0,0,0,.06);"
+    "font-size:12.5px;color:#444;line-height:1.5;white-space:pre-wrap;"
+    "word-break:break-all;font-family:ui-monospace,'SF Mono',Menlo,monospace;}"
     "</style></head><body>"
     "<div class=\"topbar\">"
     f"<a class=\"back\" href=\"{_BACK_URL}\" target=\"_top\" rel=\"noopener\">"
@@ -107,6 +115,8 @@ _PAGE_HTML = (
     "<div class=\"countdown\" id=\"qr-countdown\"></div>"
     "</div>"
     "<button id=\"trigger-btn\" class=\"btn\">手动触发 QR 登录</button>"
+    "<button id=\"backfill-btn\" class=\"btn secondary\">补全一年历史统计</button>"
+    "<div id=\"backfill-result\" class=\"result\" style=\"display:none;\"></div>"
     "<script>"
     "const QR_LIFETIME=" + str(QR_LIFETIME_SECONDS) + ";"
     "const $=(id)=>document.getElementById(id);"
@@ -174,6 +184,29 @@ _PAGE_HTML = (
     "  try{await fetch('trigger',{method:'POST'});}catch(e){}"
     "  setTimeout(refreshStatus,800);"
     "});"
+    "$('backfill-btn').addEventListener('click',async()=>{"
+    "  const btn=$('backfill-btn'),out=$('backfill-result');"
+    "  btn.disabled=true;btn.textContent='回填中…';out.style.display='none';"
+    "  try{"
+    "    const r=await fetch('backfill',{method:'POST'});"
+    "    const data=await r.json();"
+    "    const u=data.usage||{},c=data.charge||{};"
+    "    const lines=[];"
+    "    if(data.success){"
+    "      lines.push('用电量：候选 '+u.candidates+' 已有 '+u.existing+' 新增 '+u.imported);"
+    "      lines.push('电费：候选 '+c.candidates+' 已有 '+c.existing+' 新增 '+c.imported);"
+    "      if((u.points||[]).length){lines.push('');lines.push('新增点：');"
+    "        (u.points||[]).forEach(p=>{lines.push('  '+p.start+' = '+p.state+' kWh');});}"
+    "    }else{"
+    "      lines.push('失败：'+(data.error||JSON.stringify(data)));"
+    "    }"
+    "    out.textContent=lines.join('\\n');out.style.display='';"
+    "  }catch(e){"
+    "    out.textContent='请求失败：'+e;out.style.display='';"
+    "  }finally{"
+    "    btn.disabled=false;btn.textContent='补全一年历史统计';"
+    "  }"
+    "});"
     "refreshStatus();setInterval(refreshStatus,1000);"
     "</script></body></html>"
 ).encode("utf-8")
@@ -213,6 +246,30 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(204)
             self.end_headers()
             return
+        if self.path == "/backfill":
+            cb = _backfill_callback
+            if cb is None:
+                self.send_error(503, "Backfill not wired up")
+                return
+            try:
+                result = cb()
+            except Exception as exc:
+                logging.warning("Backfill raised: %s", exc)
+                body = json.dumps({"success": False, "error": str(exc)}).encode("utf-8")
+                self.send_response(500)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            body = json.dumps(result).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+            return
         self.send_error(404, "Not Found")
 
     def _serve_bytes(self, body: bytes, content_type: str):
@@ -251,11 +308,16 @@ class _ReusableTCPServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
-def start(port: int | None = None, on_trigger: Callable[[], None] | None = None) -> None:
+def start(
+    port: int | None = None,
+    on_trigger: Callable[[], None] | None = None,
+    on_backfill: Callable[[], dict] | None = None,
+) -> None:
     """Start the QR server in a background thread. Safe to call once
     at process startup; does nothing when the port is unset/invalid."""
-    global _trigger_callback
+    global _trigger_callback, _backfill_callback
     _trigger_callback = on_trigger
+    _backfill_callback = on_backfill
     raw = port if port is not None else os.getenv("INGRESS_PORT", "")
     try:
         port_int = int(raw)
