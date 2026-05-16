@@ -115,17 +115,28 @@ def _build_snapshot_series(
     monthly_rows: list[tuple[str, float, float]],
 ) -> tuple[list[tuple[datetime, float, float]], list[tuple[datetime, float, float]]]:
     """Return (usage_points, charge_points) — each a sorted list of
-    (datetime, state, sum). state == sum (both equal cumulative through
-    that month's end). A zero anchor is prepended at the end of the
-    month before the earliest monthly_rows entry."""
+    (datetime, state, sum). state == sum == cumulative through end of
+    that month. A zero anchor is prepended at the end of the month
+    before the earliest monthly_rows entry.
+
+    The **current** month is skipped — its row still grows over the
+    days remaining in the month, so writing its current value at the
+    "month-end" 23:00 timestamp would either collide with HA's own
+    later automated record at that timestamp or, before that timestamp
+    arrives, leave a row in the future with a state lower than what
+    HA records at intermediate hours."""
     if not monthly_rows:
         return [], []
-    anchor_dt = _month_end_dt(_previous_month_key(monthly_rows[0][0]))
+    current_month = datetime.now(TZ).strftime("%Y-%m")
+    completed = [row for row in monthly_rows if row[0] < current_month]
+    if not completed:
+        return [], []
+    anchor_dt = _month_end_dt(_previous_month_key(completed[0][0]))
     usage = [(anchor_dt, 0.0, 0.0)]
     charge = [(anchor_dt, 0.0, 0.0)]
     cum_u = 0.0
     cum_c = 0.0
-    for month_key, total_u, total_c in monthly_rows:
+    for month_key, total_u, total_c in completed:
         cum_u += total_u
         cum_c += total_c
         end = _month_end_dt(month_key)
@@ -202,11 +213,20 @@ def _import_points(
     )
 
 
-def run_backfill() -> dict:
+def run_backfill(*, clear_first: bool = True) -> dict:
     """Public entrypoint. Reads monthly_usage, computes month-end
-    snapshots, skips any that HA already has, and imports the rest for
-    both the usage and charge sensors."""
-    logging.info("Statistics backfill: starting")
+    snapshots through the previous month (the current month is left
+    to HA's auto-recorder), optionally clears any existing statistics
+    for the two cumulative sensors (to drop pollution from the early
+    last_reset_value_template bug), then imports the snapshots.
+
+    Idempotent in the sense that re-running with the same fork data
+    produces the same final state in HA. ``clear_first=True`` is
+    needed in practice because the add-on's first 24 hours wrote
+    sum-column values that drift away from state; without clearing,
+    energy-dashboard slicing across the install boundary mis-reports.
+    """
+    logging.info("Statistics backfill: starting (clear_first=%s)", clear_first)
     user_id = _resolve_user_id()
     if not user_id:
         return {"success": False, "error": "no monthly_usage rows in fork SQLite"}
@@ -216,13 +236,39 @@ def run_backfill() -> dict:
         return {"success": False, "error": "monthly_usage empty"}
 
     usage_points, charge_points = _build_snapshot_series(monthly_rows)
-    span_start = usage_points[0][0] - timedelta(hours=1)
-    span_end = usage_points[-1][0] + timedelta(hours=1)
+    if not usage_points:
+        return {
+            "success": False,
+            "error": "no completed months yet — nothing to backfill",
+        }
 
     ws = _ws_connect()
     try:
-        existing_usage = _existing_starts(ws, 10, USAGE_SENSOR, span_start, span_end)
-        existing_charge = _existing_starts(ws, 11, CHARGE_SENSOR, span_start, span_end)
+        cleared = False
+        existing_usage: set[int] = set()
+        existing_charge: set[int] = set()
+        if clear_first:
+            clear_resp = _ws_call(
+                ws,
+                5,
+                {
+                    "type": "recorder/clear_statistics",
+                    "statistic_ids": [USAGE_SENSOR, CHARGE_SENSOR],
+                },
+            )
+            if not clear_resp.get("success", False):
+                return {
+                    "success": False,
+                    "step": "clear_statistics",
+                    "error": clear_resp,
+                }
+            cleared = True
+            logging.info("Statistics backfill: cleared existing rows for both sensors")
+        else:
+            span_start = usage_points[0][0] - timedelta(hours=1)
+            span_end = usage_points[-1][0] + timedelta(hours=1)
+            existing_usage = _existing_starts(ws, 10, USAGE_SENSOR, span_start, span_end)
+            existing_charge = _existing_starts(ws, 11, CHARGE_SENSOR, span_start, span_end)
 
         usage_to_import = [
             p for p in usage_points if int(p[0].timestamp()) not in existing_usage
@@ -250,6 +296,7 @@ def run_backfill() -> dict:
             "success": True,
             "user_id": user_id,
             "monthly_rows": len(monthly_rows),
+            "cleared_first": cleared,
             "usage": {
                 "candidates": len(usage_points),
                 "existing": len(existing_usage),
@@ -270,7 +317,8 @@ def run_backfill() -> dict:
             },
         }
         logging.info(
-            "Statistics backfill: usage imported %d (existing %d), charge imported %d (existing %d)",
+            "Statistics backfill: cleared=%s usage imported %d (existing %d), charge imported %d (existing %d)",
+            cleared,
             summary["usage"]["imported"],
             summary["usage"]["existing"],
             summary["charge"]["imported"],
