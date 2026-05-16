@@ -293,21 +293,10 @@ class TencentCaptchaHandler:
                   exists('.tencent-captcha-dy__click-word') ||
                   exists('.tencent-captcha-dy__point-area') ||
                   exists('.tencent-captcha-dy__word-content');
-                const hasSlide =
-                  /拖动|滑动|拼图|拉动/i.test(prompt) ||
-                  exists('.tencent-captcha-dy__slider') ||
-                  exists('.tencent-captcha-dy__slide-btn') ||
-                  exists('.tencent-captcha-dy__slide-wrap') ||
-                  exists('.tencent-captcha-dy__jigsaw') ||
-                  exists('[class*="tencent-captcha-dy__slide"]') ||
-                  // 95598's slide puzzle uses body-wrap text "拖动下方拼图完成验证"
-                  /拖动下方拼图/i.test(textOf('.tencent-captcha-dy__body-wrap'));
 
                 let mode = 'unknown';
                 if (hasPointClick) {
                   mode = 'point_click';
-                } else if (hasSlide) {
-                  mode = 'slide';
                 }
                 return {
                   mode,
@@ -315,7 +304,6 @@ class TencentCaptchaHandler:
                   has_mask: exists('.tencent-captcha-dy__mask, .tencent-captcha__mask-layer'),
                   has_point_area: exists('.tencent-captcha-dy__point-area, .tencent-captcha-dy__click-word'),
                   has_click_type_wrap: exists('.tencent-captcha-dy__click-type-wrap'),
-                  has_slide_widget: hasSlide,
                 };
                 """
             ) or {"mode": "unknown", "prompt": ""}

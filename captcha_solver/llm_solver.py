@@ -163,66 +163,6 @@ class LLMPointClickSolver:
                 continue
         return out
 
-    SLIDE_PROMPT = (
-        "你是一个验证码识别助手。下面这张图是腾讯防水墙的滑动拼图验证码背景。\n"
-        "图中有一个浮动的拼图小块（通常在左侧），需要被拖到背景上的目标缺口位置。\n"
-        "请返回目标缺口在背景图中的 **中心 x 像素坐标**（相对图片左上角，0 为最左边）。\n"
-        "只输出 JSON，格式：{\"x\": int}。如果识别不出请返回 {\"x\": -1}。\n"
-    )
-
-    def solve_slide_distance(self, bg_image: Image.Image) -> int:
-        """Return the target gap center x in background-image pixel space.
-
-        Returns -1 on failure / unparseable response.
-        """
-        bg_b64 = self._encode_png(bg_image)
-        endpoint = f"{self._config.base_url}/chat/completions"
-        payload = {
-            "model": self._config.model,
-            "temperature": 0,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": self.SLIDE_PROMPT},
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": f"data:image/png;base64,{bg_b64}"},
-                        },
-                    ],
-                }
-            ],
-        }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            endpoint,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {self._config.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=self._config.timeout) as resp:
-                response = json.loads(resp.read().decode("utf-8"))
-        except Exception as exc:
-            logging.warning("LLM slide solver request failed: %s", exc)
-            return -1
-        text = self._extract_text(response)
-        if not text:
-            return -1
-        match = re.search(r"\{[^{}]*\"x\"[^{}]*\}", text)
-        if not match:
-            return -1
-        try:
-            data = json.loads(match.group(0))
-            x = int(round(float(data["x"])))
-            logging.info("LLM predicted slide gap x=%s", x)
-            return x
-        except Exception:
-            return -1
-
     def solve(
         self,
         answer_image: Image.Image,
