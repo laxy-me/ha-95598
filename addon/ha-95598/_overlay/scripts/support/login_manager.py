@@ -42,12 +42,11 @@ class LoginManager:
         self._credential_index = 0
         self._account = credentials[0].account
         self._password = credentials[0].password
-        # 95598 caps password logins per account per UTC day. RK001
-        # ("网络连接超时") is the error message it returns when that
-        # cap is hit. Once we see it in a session, skip further
-        # password attempts and go straight to QR until the next
-        # process start (or the next day's quota reset).
-        self._password_login_locked: set[str] = set()
+        # 95598 caps password logins per account. RK001 ("网络连接超时")
+        # is the error message it returns when that cap is hit. We map
+        # account -> unix-epoch expiry; password login is skipped while
+        # expiry is in the future, then auto-retried.
+        self._password_login_locked: dict[str, float] = {}
         self.session_manager = session_manager
         self.driver_wait_time = driver_wait_time
         self.qr_wait_count = qr_wait_count
@@ -122,6 +121,25 @@ class LoginManager:
     # localized string to tolerate punctuation / wording drift.
     _DAILY_LIMIT_MARKERS = ("RK001", "网络连接超时", "登录次数", "超出限制", "请明日")
 
+    # Hold password-login lockout for ~24h after the most recent RK001;
+    # 95598's quota window is observed to be a rolling day rather than a
+    # midnight reset. Without a TTL, we'd need an add-on restart to ever
+    # try password login again, even after the cap clears.
+    _PASSWORD_LOCKOUT_TTL_SECONDS = 24 * 3600
+
+    def _is_password_login_locked(self, account: str) -> bool:
+        expires_at = self._password_login_locked.get(account)
+        if expires_at is None:
+            return False
+        if time.time() >= expires_at:
+            self._password_login_locked.pop(account, None)
+            logging.info(
+                "Password-login lockout for %s expired (~24h since last RK001); retrying password login.",
+                mask_account(account),
+            )
+            return False
+        return True
+
     def _classify_error(self, error: str) -> str:
         if not error:
             return ""
@@ -161,11 +179,15 @@ class LoginManager:
             credential = self._activate_credential(
                 self._credential_index if attempt == 0 else self._credential_index + 1
             )
-            if credential.account in self._password_login_locked:
+            if self._is_password_login_locked(credential.account):
                 logging.info(
                     "Skip password login for credential %s — daily password-login cap "
-                    "already hit this session (RK001). Will try fallback only.",
+                    "still active (RK001, unlocks at %s). Will try fallback only.",
                     credential.label,
+                    time.strftime(
+                        "%Y-%m-%d %H:%M:%S",
+                        time.localtime(self._password_login_locked[credential.account]),
+                    ),
                 )
                 continue
             skipped_all = False
@@ -262,13 +284,15 @@ class LoginManager:
             if post_login_state in ("error", "limit_exceeded"):
                 error_message = self._get_error_message(driver, "//div[@class='errmsg-tip']//span")
                 if post_login_state == "limit_exceeded":
-                    self._password_login_locked.add(self._account)
+                    unlock_at = time.time() + self._PASSWORD_LOCKOUT_TTL_SECONDS
+                    self._password_login_locked[self._account] = unlock_at
                     logging.warning(
                         "95598 hit daily password-login cap for %s: %s. "
-                        "Locking out password login this session — using QR-code fallback "
+                        "Locking out password login until %s (24h TTL) — using QR-code fallback "
                         "(QR logins do not consume the password quota).",
                         mask_account(self._account),
                         error_message or "<empty>",
+                        time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(unlock_at)),
                     )
                 else:
                     logging.info(
