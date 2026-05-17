@@ -21,6 +21,7 @@ from scripts.support.session_manager import SessionManager
 
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = ROOT_DIR / "data"
+PASSWORD_LOCKOUT_STATE_PATH = DATA_DIR / "password_lockout.json"
 
 
 class LoginManager:
@@ -46,8 +47,15 @@ class LoginManager:
         # 95598 caps password logins per account. RK001 ("网络连接超时")
         # is the error message it returns when that cap is hit. We map
         # account -> unix-epoch expiry; password login is skipped while
-        # expiry is in the future, then auto-retried.
-        self._password_login_locked: dict[str, float] = {}
+        # expiry is in the future, then auto-retried. State is
+        # persisted across add-on restarts so each restart doesn't
+        # reset the timer.
+        self._password_login_locked: dict[str, float] = self._load_lockout_state()
+        if self._password_login_locked:
+            # Publish the soonest unlock so the Ingress UI shows the
+            # correct countdown right after add-on restart instead of
+            # waiting for the next RK001 hit.
+            state_registry.set_lockout_until(min(self._password_login_locked.values()))
         self.session_manager = session_manager
         self.driver_wait_time = driver_wait_time
         self.qr_wait_count = qr_wait_count
@@ -124,11 +132,41 @@ class LoginManager:
     # localized string to tolerate punctuation / wording drift.
     _DAILY_LIMIT_MARKERS = ("RK001", "网络连接超时", "登录次数", "超出限制", "请明日")
 
-    # Hold password-login lockout for ~24h after the most recent RK001;
-    # 95598's quota window is observed to be a rolling day rather than a
-    # midnight reset. Without a TTL, we'd need an add-on restart to ever
-    # try password login again, even after the cap clears.
+    # Hold password-login lockout for ~24h after the *first* RK001 in
+    # a window — 95598's quota is a rolling-day window from the first
+    # offending attempt, not the latest, so re-stamping unlock_at on
+    # every subsequent RK001 hit would keep pushing the timer forward
+    # forever (especially across add-on restarts that re-trigger the
+    # initial fetch). State is persisted to disk so an add-on restart
+    # within the window doesn't reset the timer either.
     _PASSWORD_LOCKOUT_TTL_SECONDS = 24 * 3600
+
+    def _load_lockout_state(self) -> dict[str, float]:
+        try:
+            if not PASSWORD_LOCKOUT_STATE_PATH.exists():
+                return {}
+            raw = json.loads(PASSWORD_LOCKOUT_STATE_PATH.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return {}
+            now = time.time()
+            return {
+                str(account): float(ts)
+                for account, ts in raw.items()
+                if isinstance(ts, (int, float)) and float(ts) > now
+            }
+        except Exception as exc:
+            logging.warning("Failed to load persisted password-lockout state: %s", exc)
+            return {}
+
+    def _save_lockout_state(self) -> None:
+        try:
+            PASSWORD_LOCKOUT_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            PASSWORD_LOCKOUT_STATE_PATH.write_text(
+                json.dumps(self._password_login_locked, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logging.warning("Failed to persist password-lockout state: %s", exc)
 
     def _is_password_login_locked(self, account: str) -> bool:
         expires_at = self._password_login_locked.get(account)
@@ -136,8 +174,9 @@ class LoginManager:
             return False
         if time.time() >= expires_at:
             self._password_login_locked.pop(account, None)
+            self._save_lockout_state()
             logging.info(
-                "Password-login lockout for %s expired (~24h since last RK001); retrying password login.",
+                "Password-login lockout for %s expired (~24h since first RK001 in window); retrying password login.",
                 mask_account(account),
             )
             return False
@@ -287,15 +326,30 @@ class LoginManager:
             if post_login_state in ("error", "limit_exceeded"):
                 error_message = self._get_error_message(driver, "//div[@class='errmsg-tip']//span")
                 if post_login_state == "limit_exceeded":
-                    unlock_at = time.time() + self._PASSWORD_LOCKOUT_TTL_SECONDS
-                    self._password_login_locked[self._account] = unlock_at
+                    now = time.time()
+                    existing = self._password_login_locked.get(self._account)
+                    if existing is None or existing <= now:
+                        # First RK001 in a fresh window — start the
+                        # 24h countdown from this moment. Subsequent
+                        # hits inside the same window keep the original
+                        # unlock_at so the timer reflects the server's
+                        # rolling window, not the latest retry.
+                        unlock_at = now + self._PASSWORD_LOCKOUT_TTL_SECONDS
+                        self._password_login_locked[self._account] = unlock_at
+                        self._save_lockout_state()
+                        first_hit = True
+                    else:
+                        unlock_at = existing
+                        first_hit = False
                     state_registry.set_lockout_until(unlock_at)
                     logging.warning(
                         "95598 hit daily password-login cap for %s: %s. "
-                        "Locking out password login until %s (24h TTL) — using QR-code fallback "
+                        "%s — password login locked out until %s "
                         "(QR logins do not consume the password quota).",
                         mask_account(self._account),
                         error_message or "<empty>",
+                        "Starting 24h lockout" if first_hit
+                        else "Already inside an active lockout window, keeping original unlock time",
                         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(unlock_at)),
                     )
                 else:
