@@ -45,6 +45,23 @@ def run_task(data_fetcher, retry_times_limit: int):
         for retry_times in range(1, retry_times_limit + 1):
             try:
                 data_fetcher.fetch()
+                # Push the freshly read data into HA's long-term
+                # statistics so the energy dashboard's per-day chart
+                # picks up any newly arrived daily rows on the right
+                # date. INSERT OR REPLACE on (statistic_id, start_ts)
+                # also reclaims any rows HA's auto-recorder wrote with
+                # sum=0 since the last fetch — that was the root cause
+                # of the negative-bar dashboard render.
+                try:
+                    from scripts import statistics_backfill
+                    result = statistics_backfill.run_backfill(clear_first=False)
+                    if not result.get("success"):
+                        logging.warning(
+                            "Post-fetch statistics backfill returned non-success: %s",
+                            result,
+                        )
+                except Exception as exc:
+                    logging.warning("Post-fetch statistics backfill raised: %s", exc)
                 return
             except Exception as exc:
                 logging.error(
@@ -60,27 +77,6 @@ def run_task(data_fetcher, retry_times_limit: int):
             state_registry.set_state(state_registry.IDLE)
         auto_replay_once(DATA_DIR)
         _run_task_lock.release()
-
-
-def schedule_statistics_push() -> None:
-    """Schedule an idempotent hourly push of current statistics so HA's
-    auto-recorder reset (which occasionally writes sum=0) gets
-    overwritten with fork's authoritative cumulative. See
-    statistics_backfill.push_current_statistics for context."""
-    from scripts import statistics_backfill
-
-    def _run():
-        try:
-            result = statistics_backfill.push_current_statistics()
-            if not result.get("success"):
-                logging.warning("Hourly statistics push failed: %s", result)
-        except Exception as exc:
-            logging.warning("Hourly statistics push raised: %s", exc)
-
-    # Fire at minute :30 of each hour, comfortably after HA's :00~:05
-    # auto-recorder hourly write window.
-    schedule.every().hour.at(":30").do(_run)
-    logging.info("Scheduled hourly statistics push at :30 each hour")
 
 
 def trigger_manual_fetch(data_fetcher, retry_times_limit: int) -> bool:

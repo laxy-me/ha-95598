@@ -231,7 +231,7 @@ def _build_full_series(
     return usage, charge, diag
 
 
-def _existing_starts(
+def _existing_starts(  # noqa: F841 — kept for ad-hoc debugging; not used in run_backfill
     ws: websocket.WebSocket,
     msg_id: int,
     statistic_id: str,
@@ -299,98 +299,6 @@ def _import_points(
     )
 
 
-def _current_hour_dt(ts: Optional[float] = None) -> datetime:
-    """The current hour rounded down (HA statistics are hour-aligned)."""
-    base = datetime.fromtimestamp(ts if ts is not None else time.time(), tz=TZ)
-    return base.replace(minute=0, second=0, microsecond=0)
-
-
-def _current_cumulative(
-    monthly_rows: list[tuple[str, float, float]],
-    daily_rows: list[tuple[str, float, float]],
-) -> tuple[float, float]:
-    """Cumulative usage / charge through the most recent day we have
-    data for (= SUM of completed months + sum of contiguous dailies
-    in the current month). When daily is non-contiguous or missing,
-    falls back to the cumulative through the last monthly row."""
-    if not monthly_rows:
-        return 0.0, 0.0
-    current_month = datetime.now(TZ).strftime("%Y-%m")
-    cum_u = 0.0
-    cum_c = 0.0
-    cum_through: dict[str, tuple[float, float]] = {}
-    for month_key, total_u, total_c in monthly_rows:
-        cum_u += total_u
-        cum_c += total_c
-        cum_through[month_key] = (cum_u, cum_c)
-    prev_month = _previous_month_key(current_month)
-    start_cum = cum_through.get(prev_month, (0.0, 0.0))
-    dailies = _contiguous_current_month_dailies(daily_rows, current_month)
-    if dailies:
-        day_cum_u = start_cum[0]
-        day_cum_c = start_cum[1]
-        for _, day_u, day_c in dailies:
-            day_cum_u += day_u
-            day_cum_c += day_c
-        return round(day_cum_u, 2), round(day_cum_c, 2)
-    return round(cum_u, 2), round(cum_c, 2)
-
-
-def push_current_statistics() -> dict:
-    """Idempotently overwrite a single hour-aligned statistics row
-    (= current hour) for both cumulative sensors with fork's
-    authoritative cumulative state.
-
-    Why: HA's auto-recorder occasionally writes ``sum = 0`` for our
-    total_increasing sensors at hour boundaries — its in-memory
-    cumulative tracker re-initializes on add-on / HA restart and
-    loses the baseline established by import_statistics. The
-    energy dashboard's per-day delta then reads as a huge negative.
-
-    Scheduling this at every hour ":30" (after HA's :00~:05 hourly
-    write window) re-establishes the correct sum so HA's next
-    record naturally continues from fork's value.
-
-    Idempotent: re-running at the same hour overwrites the same
-    start_ts with the same sum (a no-op for the data)."""
-    logging.info("Statistics hourly push: starting")
-    user_id = _resolve_user_id()
-    if not user_id:
-        return {"success": False, "error": "no monthly_usage rows"}
-    monthly_rows = _load_monthly_snapshots(user_id)
-    if not monthly_rows:
-        return {"success": False, "error": "monthly_usage empty"}
-    daily_rows = _load_daily_snapshots(user_id)
-    cum_u, cum_c = _current_cumulative(monthly_rows, daily_rows)
-    hour = _current_hour_dt()
-
-    ws = _ws_connect()
-    try:
-        u = _import_points(ws, 30, USAGE_SENSOR, "kWh",
-                           [(hour, cum_u, cum_u)])
-        if not u.get("success", False):
-            return {"success": False, "step": "import_usage", "error": u}
-        c = _import_points(ws, 31, CHARGE_SENSOR, "CNY",
-                           [(hour, cum_c, cum_c)])
-        if not c.get("success", False):
-            return {"success": False, "step": "import_charge", "error": c}
-        logging.info(
-            "Statistics hourly push: usage=%.2f kWh, charge=%.2f CNY at %s",
-            cum_u, cum_c, hour.isoformat(),
-        )
-        return {
-            "success": True,
-            "hour": hour.isoformat(),
-            "usage_state": cum_u,
-            "charge_state": cum_c,
-        }
-    finally:
-        try:
-            ws.close()
-        except Exception:
-            pass
-
-
 def run_backfill(*, clear_first: bool = True) -> dict:
     """Public entrypoint. Reads monthly_usage, computes month-end
     snapshots through the previous month (the current month is left
@@ -424,8 +332,6 @@ def run_backfill(*, clear_first: bool = True) -> dict:
     ws = _ws_connect()
     try:
         cleared = False
-        existing_usage: set[int] = set()
-        existing_charge: set[int] = set()
         if clear_first:
             clear_resp = _ws_call(
                 ws,
@@ -443,18 +349,14 @@ def run_backfill(*, clear_first: bool = True) -> dict:
                 }
             cleared = True
             logging.info("Statistics backfill: cleared existing rows for both sensors")
-        else:
-            span_start = usage_points[0][0] - timedelta(hours=1)
-            span_end = usage_points[-1][0] + timedelta(hours=1)
-            existing_usage = _existing_starts(ws, 10, USAGE_SENSOR, span_start, span_end)
-            existing_charge = _existing_starts(ws, 11, CHARGE_SENSOR, span_start, span_end)
 
-        usage_to_import = [
-            p for p in usage_points if int(p[0].timestamp()) not in existing_usage
-        ]
-        charge_to_import = [
-            p for p in charge_points if int(p[0].timestamp()) not in existing_charge
-        ]
+        # Always re-import every point. recorder/import_statistics
+        # does INSERT OR REPLACE on (statistic_id, start_ts), so this
+        # safely overwrites any rows HA's auto-recorder may have
+        # written with sum=0 between fork's pushes — that's the
+        # whole reason we re-run this after every successful fetch.
+        usage_to_import = usage_points
+        charge_to_import = charge_points
 
         usage_resp = _import_points(ws, 20, USAGE_SENSOR, "kWh", usage_to_import)
         if not usage_resp.get("success", False):
@@ -483,7 +385,6 @@ def run_backfill(*, clear_first: bool = True) -> dict:
             "cleared_first": cleared,
             "usage": {
                 "candidates": len(usage_points),
-                "existing": len(existing_usage),
                 "imported": len(usage_to_import),
                 "points": [
                     {"start": dt.isoformat(), "state": state}
@@ -492,7 +393,6 @@ def run_backfill(*, clear_first: bool = True) -> dict:
             },
             "charge": {
                 "candidates": len(charge_points),
-                "existing": len(existing_charge),
                 "imported": len(charge_to_import),
                 "points": [
                     {"start": dt.isoformat(), "state": state}
@@ -501,12 +401,10 @@ def run_backfill(*, clear_first: bool = True) -> dict:
             },
         }
         logging.info(
-            "Statistics backfill: cleared=%s usage imported %d (existing %d), charge imported %d (existing %d)",
+            "Statistics backfill: cleared=%s usage imported %d, charge imported %d",
             cleared,
             summary["usage"]["imported"],
-            summary["usage"]["existing"],
             summary["charge"]["imported"],
-            summary["charge"]["existing"],
         )
         return summary
     finally:

@@ -13,7 +13,6 @@ from scripts.support.job_scheduler import (
     run_forever,
     run_task,
     schedule_jobs,
-    schedule_statistics_push,
     trigger_manual_fetch,
 )
 from scripts.support.tou_price import TimeOfUsePriceResolver
@@ -98,16 +97,15 @@ def main():
     except Exception as exc:
         logging.warning("QR server failed to start: %s", exc)
 
-    # Schedule hourly push to keep HA recorder's reset of sum=0 from
-    # surfacing as a daily delta in the energy dashboard, and run an
-    # immediate push so the fix is in effect from the moment the
-    # add-on starts (without waiting for the next :30 boundary).
+    # Run an idempotent statistics backfill at startup so the energy
+    # dashboard is consistent with fork's SQLite even before the next
+    # scheduled fetch — this also reclaims any rows HA's auto-recorder
+    # wrote with sum=0 between the last shutdown and now.
     try:
-        schedule_statistics_push()
         from scripts import statistics_backfill
-        statistics_backfill.push_current_statistics()
+        statistics_backfill.run_backfill(clear_first=False)
     except Exception as exc:
-        logging.warning("Initial statistics push failed: %s", exc)
+        logging.warning("Startup statistics backfill failed: %s", exc)
 
     republished = updater.republish()
     if republished and updater.should_skip_startup_fetch():
