@@ -9,7 +9,13 @@ from scripts.data_fetcher import DataFetcher
 from scripts.sensor_updater import SensorUpdater
 from scripts.support.error_watcher import ErrorWatcher
 from scripts.support.credentials import LoginCredential, load_login_credentials
-from scripts.support.job_scheduler import run_forever, run_task, schedule_jobs, trigger_manual_fetch
+from scripts.support.job_scheduler import (
+    run_forever,
+    run_task,
+    schedule_jobs,
+    schedule_statistics_push,
+    trigger_manual_fetch,
+)
 from scripts.support.tou_price import TimeOfUsePriceResolver
 
 
@@ -91,6 +97,17 @@ def main():
         )
     except Exception as exc:
         logging.warning("QR server failed to start: %s", exc)
+
+    # Schedule hourly push to keep HA recorder's reset of sum=0 from
+    # surfacing as a daily delta in the energy dashboard, and run an
+    # immediate push so the fix is in effect from the moment the
+    # add-on starts (without waiting for the next :30 boundary).
+    try:
+        schedule_statistics_push()
+        from scripts import statistics_backfill
+        statistics_backfill.push_current_statistics()
+    except Exception as exc:
+        logging.warning("Initial statistics push failed: %s", exc)
 
     republished = updater.republish()
     if republished and updater.should_skip_startup_fetch():

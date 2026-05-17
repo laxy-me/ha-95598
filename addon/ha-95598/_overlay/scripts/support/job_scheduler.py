@@ -62,6 +62,27 @@ def run_task(data_fetcher, retry_times_limit: int):
         _run_task_lock.release()
 
 
+def schedule_statistics_push() -> None:
+    """Schedule an idempotent hourly push of current statistics so HA's
+    auto-recorder reset (which occasionally writes sum=0) gets
+    overwritten with fork's authoritative cumulative. See
+    statistics_backfill.push_current_statistics for context."""
+    from scripts import statistics_backfill
+
+    def _run():
+        try:
+            result = statistics_backfill.push_current_statistics()
+            if not result.get("success"):
+                logging.warning("Hourly statistics push failed: %s", result)
+        except Exception as exc:
+            logging.warning("Hourly statistics push raised: %s", exc)
+
+    # Fire at minute :30 of each hour, comfortably after HA's :00~:05
+    # auto-recorder hourly write window.
+    schedule.every().hour.at(":30").do(_run)
+    logging.info("Scheduled hourly statistics push at :30 each hour")
+
+
 def trigger_manual_fetch(data_fetcher, retry_times_limit: int) -> bool:
     """Spawn a fetch in a worker thread. Returns False if one is already
     running (the lock acquisition in run_task will fast-reject)."""
