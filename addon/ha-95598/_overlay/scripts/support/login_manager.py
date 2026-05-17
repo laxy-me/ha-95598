@@ -340,6 +340,25 @@ class LoginManager:
     def _fallback_login(self, driver) -> bool:
         fallback = os.getenv("LOGIN_FALLBACK")
         if fallback == "qrcode":
+            # When every credential is locked out by RK001 we get here
+            # without ever calling login() / driver.get(LOGIN_URL), so
+            # the driver is still parked on whatever URL session
+            # restore last touched. _qr_login expects the login page
+            # DOM (.qr_code switch element), so navigate explicitly
+            # before delegating.
+            try:
+                current_url = driver.current_url or ""
+            except Exception:
+                current_url = ""
+            if not current_url.startswith(LOGIN_URL):
+                try:
+                    driver.get(LOGIN_URL)
+                    self._log_page_state(driver, "fallback_open_login_url")
+                    self._step_sleep(driver, "fallback_login_page_load")
+                except Exception as exc:
+                    logging.warning(
+                        "Failed to navigate to login page before QR fallback: %s", exc
+                    )
             self._set_login_method("qrcode")
             return self._qr_login(driver)
         return False
