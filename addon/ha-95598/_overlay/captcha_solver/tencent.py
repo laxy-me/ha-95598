@@ -59,20 +59,22 @@ class TencentCaptchaHandler:
         return self._learning_store
 
     def has_captcha(self, driver) -> bool:
-        try:
-            return self._get_visible_widget(driver) is not None
-        except Exception:
-            return False
+        # 95598 preloads the Tencent captcha widget DOM into the page at
+        # ``top: -1000000`` so it can animate in on demand. The widget
+        # passes display/visibility/opacity checks the whole time, so a
+        # relaxed presence check returns True even when no captcha is
+        # actually being shown — which used to make
+        # ``_wait_for_post_password_login_state`` exit on the first poll
+        # (before the real submit response arrives), classify every
+        # response as "captcha", then read ``mode=unknown`` from the
+        # empty preloaded widget and fall straight through to QR — all
+        # while having burned a password-login attempt. Use the strict
+        # viewport-aware check so this only returns True when a captcha
+        # is genuinely on-screen.
+        return self.is_captcha_actually_displayed(driver)
 
     def is_captcha_actually_displayed(self, driver) -> bool:
-        """True only if a Tencent widget is rendered inside the viewport.
-
-        ``has_captcha`` matches the widget even when 95598 has it
-        preloaded at ``top: -1000000`` (offscreen, waiting state). For
-        diagnostic / fallback paths where we want to know whether the
-        user is actually being shown a captcha *right now*, that's a
-        false positive — every 95598 login page reports True.
-        """
+        """True only if a Tencent widget is rendered inside the viewport."""
         try:
             rect = driver.execute_script(
                 """
