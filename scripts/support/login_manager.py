@@ -190,29 +190,40 @@ class LoginManager:
         return "error"
 
     def _wait_for_post_password_login_state(self, driver, timeout: int = 12) -> str:
+        started = time.monotonic()
         try:
             WebDriverWait(driver, timeout).until(
                 lambda d: self._confirm_login_success(d)
                 or bool(self._get_error_message(d, "//div[@class='errmsg-tip']//span"))
                 or self.tencent_captcha.has_captcha(d)
             )
+            wait_outcome = "matched"
         except Exception:
-            pass
+            wait_outcome = "timeout"
+        elapsed = time.monotonic() - started
 
         if self._confirm_login_success(driver):
-            return "success"
-        # 95598 preloads the Tencent captcha widget DOM into the page
-        # *before* the user submits anything, so `has_captcha` is True
-        # whether or not a real captcha was actually issued. Check the
-        # explicit error tip first — if 95598 surfaced an errmsg (e.g.
-        # RK001 daily limit) we must not mistake the preloaded widget
-        # for a real captcha challenge.
-        error_msg = self._get_error_message(driver, "//div[@class='errmsg-tip']//span")
-        if error_msg:
-            return self._classify_error(error_msg)
-        if self.tencent_captcha.has_captcha(driver):
-            return "captcha"
-        return "unknown"
+            state = "success"
+        else:
+            # `has_captcha` is now viewport-aware (v0.1.25), so the order
+            # below mostly affects classification when both errmsg and a
+            # real captcha somehow coexist — prefer the errmsg in that
+            # case since it's the authoritative server response.
+            error_msg = self._get_error_message(driver, "//div[@class='errmsg-tip']//span")
+            if error_msg:
+                state = self._classify_error(error_msg)
+            elif self.tencent_captcha.has_captcha(driver):
+                state = "captcha"
+            else:
+                state = "unknown"
+
+        logging.info(
+            "Post-password-login wait exited in %.2fs via %s; classified as %s.",
+            elapsed,
+            wait_outcome,
+            state,
+        )
+        return state
 
     def _login_with_credential_rotation(self, driver, phone_code: bool = False) -> bool:
         total_credentials = len(self._credentials)
@@ -308,6 +319,10 @@ class LoginManager:
             post_login_state = self._wait_for_post_password_login_state(driver)
             logging.info("Post password-login state: %s", post_login_state)
             if post_login_state == "captcha":
+                # Capture the presence snapshot up front so we can
+                # diagnose mode=unknown / mis-detected mode cases (lists
+                # every candidate selector + its rect/visibility).
+                self._save_tencent_presence(driver, label="after_submit_password_login_captcha")
                 captcha_info = self.tencent_captcha.get_info(driver)
                 logging.info(
                     "Tencent captcha widget detected after password submit, mode=%s, prompt=%s.",
@@ -358,7 +373,7 @@ class LoginManager:
                         error_message or "<empty>",
                     )
                 self._log_page_state(driver, "after_submit_password_login_error")
-                self._save_tencent_presence(driver)
+                self._save_tencent_presence(driver, label="after_submit_password_login_error")
                 if self.tencent_captcha.is_captcha_actually_displayed(driver):
                     self.tencent_captcha.capture_state(driver, "after_submit_password_login_error_tencent_captcha")
                 if not allow_fallback:
@@ -372,10 +387,10 @@ class LoginManager:
             return False
         return self._fallback_login(driver)
 
-    def _save_tencent_presence(self, driver) -> None:
+    def _save_tencent_presence(self, driver, label: str = "after_submit_password_login_error") -> None:
         try:
             presence = self.tencent_captcha.get_presence_snapshot(driver)
-            presence_path = self._trace_dir() / "after_submit_password_login_error.tencent_presence.json.txt"
+            presence_path = self._trace_dir() / f"{label}.tencent_presence.json.txt"
             presence_path.write_text(json.dumps(presence, ensure_ascii=False, indent=2), encoding="utf-8")
             logging.info("Saved Tencent presence snapshot to %s", presence_path)
         except Exception as exc:
