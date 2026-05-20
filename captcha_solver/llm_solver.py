@@ -144,13 +144,43 @@ class LLMPointClickSolver:
     def _parse_points(text: str) -> list[tuple[int, int]]:
         if not text:
             return []
-        # Try to locate a JSON block even if the model wraps it in prose.
-        match = re.search(r"\{.*?\"points\".*?\}", text, re.DOTALL)
-        if not match:
-            return []
+        # LLMs (especially glm-4v) commonly wrap their JSON answer in a
+        # ```json … ``` markdown fence even when prompted "JSON only".
+        # Strip the fence first so the body can be parsed directly.
+        cleaned = text.strip()
+        fence = re.match(r"^```(?:json|JSON)?\s*\n?(.*?)\n?```\s*$", cleaned, re.DOTALL)
+        if fence:
+            cleaned = fence.group(1).strip()
+
+        data = None
         try:
-            data = json.loads(match.group(0))
+            data = json.loads(cleaned)
         except json.JSONDecodeError:
+            # Fall back to scanning for the outermost balanced `{ … }` that
+            # contains `"points"`. The previous non-greedy regex matched the
+            # *innermost* brace pair instead — e.g. `{"x":1,"y":2}` from
+            # within the points array — so json.loads would always fail.
+            start = cleaned.find("{")
+            while start != -1 and data is None:
+                depth = 0
+                for i in range(start, len(cleaned)):
+                    ch = cleaned[i]
+                    if ch == "{":
+                        depth += 1
+                    elif ch == "}":
+                        depth -= 1
+                        if depth == 0:
+                            candidate = cleaned[start : i + 1]
+                            if '"points"' in candidate:
+                                try:
+                                    data = json.loads(candidate)
+                                except json.JSONDecodeError:
+                                    pass
+                            break
+                if data is not None:
+                    break
+                start = cleaned.find("{", start + 1)
+        if not isinstance(data, dict):
             return []
         points = data.get("points") or []
         out: list[tuple[int, int]] = []
