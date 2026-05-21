@@ -105,6 +105,19 @@ class LLMPointClickSolver:
     # increases pickup. The image-dimension bounds are appended dynamically
     # in `_call()` so the LLM knows the valid coordinate range, and
     # `solve()` discards entire responses with any out-of-bounds point.
+    # Prompt evolution note:
+    #   v0.1.29 added a strict "if you can't find a target, return an empty
+    #   array" rule. That worked great for glm-4v-flash (which ignored it and
+    #   kept hallucinating placeholders anyway, then got filtered by the
+    #   bounds check). But it backfired on gemini-2.5-flash, which takes
+    #   instructions literally and started returning `{"points": []}` for
+    #   every captcha — perfectly compliant, perfectly useless.
+    #
+    # v0.1.32 swaps "return empty if unsure" for "give your best guess; the
+    # caller will validate". The bounds check in solve() is sufficient to
+    # reject obviously bogus answers; we'd rather have a wrong-but-plausible
+    # guess to try than an empty array (a wrong guess at least costs one
+    # captcha refresh; an empty array costs a whole login attempt).
     DEFAULT_PROMPT = (
         "你是 95598 国家电网登录页 Tencent 防水墙点选验证码识别助手。\n"
         "下面会给你两张图：\n"
@@ -117,12 +130,10 @@ class LLMPointClickSolver:
         "像素坐标。坐标系原点 (0,0) 是背景图左上角,x 向右,y 向下。\n"
         "\n"
         "规则:\n"
-        "1. 坐标必须严格在背景图尺寸范围内（具体尺寸见下方说明）。超出范围的"
-        "坐标会被丢弃,整体被视为失败。\n"
-        "2. 必须返回**恰好**和目标序列等量的点位；缺一个或多一个都视为失败。\n"
-        "3. 如果某个目标在背景图中找不到（或无法可靠定位）,整体返回空数组：\n"
-        "   {\"points\": []}\n"
-        "   不要用占位/猜测坐标填充。\n"
+        "1. 坐标必须严格在背景图尺寸范围内（具体尺寸见下方说明）。\n"
+        "2. 必须返回**恰好**和目标序列等量的点位,按从左到右的顺序。\n"
+        "3. 即使目标小、与场景融合、或难以辨认,也要给出**最可能位置**的猜测,"
+        "不要返回空数组。背景图中一定有这些目标,你的任务是定位它们。\n"
         "4. 只输出 JSON,无任何解释/markdown 围栏/前后文字。格式必须严格如下：\n"
         "   {\"points\": [{\"x\": int, \"y\": int}, ...]}\n"
     )
