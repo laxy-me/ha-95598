@@ -1,5 +1,5 @@
 name: "95598 for Home Assistant (laxy fork)"
-version: "0.1.29"
+version: "0.1.30"
 slug: "ha_95598"
 description: "Sync 95598 electricity data to Home Assistant (PID 1 fix + LLM vision captcha solver)"
 url: "https://github.com/laxy-me/ha-95598"
@@ -108,7 +108,7 @@ schema:
   qr_code_login_refresh_limit: int(0,5)
   trace_retention_days: int(1,30)
   llm_api_key: password?
-  llm_provider: list(zhipu|openai|custom)?
+  llm_provider: list(zhipu|openai|anthropic|custom)?
   llm_model: str?
   llm_base_url: str?
   tou_peak_rate: float(0,10)?

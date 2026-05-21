@@ -48,6 +48,19 @@ _PROVIDER_DEFAULTS = {
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-4o-mini",
     },
+    # Anthropic uses its own Messages API (NOT OpenAI-compatible) — different
+    # auth header (x-api-key + anthropic-version), different content block
+    # shape (`{"type": "image", "source": {...}}` vs OpenAI's `image_url`),
+    # different response format (`content[0].text` vs `choices[0].message`).
+    # Picked claude-haiku-4-5 as default: cheapest current-gen Anthropic
+    # vision model, ~$1/MTok input / ~$5/MTok output — captcha calls are
+    # ~1-2k tokens so each attempt is fractions of a cent. Bump to
+    # claude-sonnet-4-6 if haiku turns out underpowered on 95598's AI 3D
+    # scenes (sonnet is ~10x cost but reliably solves visually-dense scenes).
+    "anthropic": {
+        "base_url": "https://api.anthropic.com/v1",
+        "model": "claude-haiku-4-5",
+    },
 }
 
 
@@ -56,6 +69,7 @@ class LLMConfig:
     api_key: str
     base_url: str
     model: str
+    provider: str = "zhipu"
     timeout: float = 30.0
 
 
@@ -67,7 +81,7 @@ def load_llm_config_from_env() -> Optional[LLMConfig]:
     defaults = _PROVIDER_DEFAULTS.get(provider, _PROVIDER_DEFAULTS["zhipu"])
     base_url = (os.getenv("LLM_BASE_URL") or defaults["base_url"]).rstrip("/")
     model = (os.getenv("LLM_MODEL") or defaults["model"]).strip()
-    return LLMConfig(api_key=api_key, base_url=base_url, model=model)
+    return LLMConfig(api_key=api_key, base_url=base_url, model=model, provider=provider)
 
 
 class LLMPointClickSolver:
@@ -118,12 +132,27 @@ class LLMPointClickSolver:
     def _call(self, answer_image: Image.Image, bg_image: Image.Image) -> dict:
         answer_b64 = self._encode_png(answer_image)
         bg_b64 = self._encode_png(bg_image)
-        endpoint = f"{self._config.base_url}/chat/completions"
         dims_hint = (
             f"\n背景图实际尺寸：宽 {bg_image.width} 像素 × 高 {bg_image.height} 像素。\n"
             f"所有 x 必须在 [0, {bg_image.width - 1}] 内,所有 y 必须在 [0, {bg_image.height - 1}] 内。\n"
             f"目标图尺寸：宽 {answer_image.width} 像素 × 高 {answer_image.height} 像素（仅供识别目标元素,不要返回这张图上的坐标）。\n"
         )
+        full_prompt = self._prompt + dims_hint
+        if self._config.provider == "anthropic":
+            endpoint, payload, headers = self._build_anthropic_request(
+                full_prompt, answer_b64, bg_b64
+            )
+        else:
+            endpoint, payload, headers = self._build_openai_request(
+                full_prompt, answer_b64, bg_b64
+            )
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=self._config.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _build_openai_request(self, prompt: str, answer_b64: str, bg_b64: str):
+        endpoint = f"{self._config.base_url}/chat/completions"
         payload = {
             "model": self._config.model,
             "temperature": 0,
@@ -131,7 +160,7 @@ class LLMPointClickSolver:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": self._prompt + dims_hint},
+                        {"type": "text", "text": prompt},
                         {"type": "text", "text": "目标图（要按顺序点击的元素序列）："},
                         {
                             "type": "image_url",
@@ -146,21 +175,65 @@ class LLMPointClickSolver:
                 }
             ],
         }
-        data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            endpoint,
-            data=data,
-            headers={
-                "Authorization": f"Bearer {self._config.api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=self._config.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        headers = {
+            "Authorization": f"Bearer {self._config.api_key}",
+            "Content-Type": "application/json",
+        }
+        return endpoint, payload, headers
 
-    @staticmethod
-    def _extract_text(api_response: dict) -> str:
+    def _build_anthropic_request(self, prompt: str, answer_b64: str, bg_b64: str):
+        endpoint = f"{self._config.base_url}/messages"
+        payload = {
+            "model": self._config.model,
+            # Anthropic requires max_tokens. Captcha answers are tiny JSON
+            # — cap generously at 512 so we never truncate.
+            "max_tokens": 512,
+            "temperature": 0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "text", "text": "目标图（要按顺序点击的元素序列）："},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": answer_b64,
+                            },
+                        },
+                        {"type": "text", "text": "背景图（在此图中定位每一个目标元素的中心点）："},
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/png",
+                                "data": bg_b64,
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+        headers = {
+            "x-api-key": self._config.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        return endpoint, payload, headers
+
+    def _extract_text(self, api_response: dict) -> str:
+        # Anthropic returns `content` as a list of typed blocks; OpenAI / Zhipu
+        # return `choices[0].message.content` as a string.
+        if self._config.provider == "anthropic":
+            try:
+                for block in api_response.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        return block.get("text") or ""
+            except Exception:
+                pass
+            return ""
         try:
             return api_response["choices"][0]["message"]["content"] or ""
         except Exception:
