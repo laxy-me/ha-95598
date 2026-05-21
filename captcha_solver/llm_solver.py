@@ -73,15 +73,36 @@ def load_llm_config_from_env() -> Optional[LLMConfig]:
 class LLMPointClickSolver:
     """Ask a vision LLM where to click on a point-click captcha background."""
 
+    # NOTE: the prompt deliberately calls out a specific kind of captcha
+    # (95598 / Tencent waterproof wall AI-generated 3D scene with mixed
+    # digit + icon targets) because glm-4v-flash with a generic "find these"
+    # prompt produces obvious hallucinations — equal-spaced sequences,
+    # perfect diagonals, and coordinates well outside the image bounds
+    # (observed y=580 for a 236-px-tall background). Being specific about
+    # what's in the image and what the targets look like meaningfully
+    # increases pickup. The image-dimension bounds are appended dynamically
+    # in `_call()` so the LLM knows the valid coordinate range, and
+    # `solve()` discards entire responses with any out-of-bounds point.
     DEFAULT_PROMPT = (
-        "你是一个验证码识别助手。下面会给你两张图：\n"
-        "- 第一张是「目标」：腾讯防水墙点选验证码顶部要求点击的字 / 物体序列。\n"
-        "- 第二张是「背景」：包含若干候选字 / 物体的背景图。\n"
-        "请按目标序列从左到右的顺序，找到背景图中对应每一个字 / 物体的中心点像素坐标。\n"
-        "只输出 JSON，不要任何解释。格式必须严格如下：\n"
-        '{"points": [{"x": int, "y": int}, ...]}\n'
-        "x 和 y 是相对背景图左上角 (0,0) 的像素坐标。\n"
-        "如果背景中找不到某个目标，请返回空 points 数组：{\"points\": []}。\n"
+        "你是 95598 国家电网登录页 Tencent 防水墙点选验证码识别助手。\n"
+        "下面会给你两张图：\n"
+        "- 第一张是「目标」：顶部指示要按顺序点击的元素序列。元素可能是阿拉伯数字、"
+        "中文字、英文字母,或小图标（房子/锁/钥匙/定位针/雨伞/植物等极简像素风线稿图标）。\n"
+        "- 第二张是「背景」：AI 生成的 3D 场景渲染（球、锥、立方体、几何形状）,"
+        "上面散落着候选元素（带描边的数字/字符/图标）需要被找到。\n"
+        "\n"
+        "任务：按目标序列从左到右的顺序,给出背景图中**每一个**目标元素的中心点"
+        "像素坐标。坐标系原点 (0,0) 是背景图左上角,x 向右,y 向下。\n"
+        "\n"
+        "规则:\n"
+        "1. 坐标必须严格在背景图尺寸范围内（具体尺寸见下方说明）。超出范围的"
+        "坐标会被丢弃,整体被视为失败。\n"
+        "2. 必须返回**恰好**和目标序列等量的点位；缺一个或多一个都视为失败。\n"
+        "3. 如果某个目标在背景图中找不到（或无法可靠定位）,整体返回空数组：\n"
+        "   {\"points\": []}\n"
+        "   不要用占位/猜测坐标填充。\n"
+        "4. 只输出 JSON,无任何解释/markdown 围栏/前后文字。格式必须严格如下：\n"
+        "   {\"points\": [{\"x\": int, \"y\": int}, ...]}\n"
     )
 
     def __init__(self, config: LLMConfig, prompt: Optional[str] = None):
@@ -98,6 +119,11 @@ class LLMPointClickSolver:
         answer_b64 = self._encode_png(answer_image)
         bg_b64 = self._encode_png(bg_image)
         endpoint = f"{self._config.base_url}/chat/completions"
+        dims_hint = (
+            f"\n背景图实际尺寸：宽 {bg_image.width} 像素 × 高 {bg_image.height} 像素。\n"
+            f"所有 x 必须在 [0, {bg_image.width - 1}] 内,所有 y 必须在 [0, {bg_image.height - 1}] 内。\n"
+            f"目标图尺寸：宽 {answer_image.width} 像素 × 高 {answer_image.height} 像素（仅供识别目标元素,不要返回这张图上的坐标）。\n"
+        )
         payload = {
             "model": self._config.model,
             "temperature": 0,
@@ -105,13 +131,13 @@ class LLMPointClickSolver:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": self._prompt},
-                        {"type": "text", "text": "目标图（要点击的字 / 物体序列）："},
+                        {"type": "text", "text": self._prompt + dims_hint},
+                        {"type": "text", "text": "目标图（要按顺序点击的元素序列）："},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{answer_b64}"},
                         },
-                        {"type": "text", "text": "背景图："},
+                        {"type": "text", "text": "背景图（在此图中定位每一个目标元素的中心点）："},
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:image/png;base64,{bg_b64}"},
@@ -220,10 +246,30 @@ class LLMPointClickSolver:
                 self._config.model,
                 text[:200],
             )
-        else:
+            return []
+        # Reject responses with any out-of-bounds point. glm-4v-flash routinely
+        # hallucinates coordinates outside the image (e.g. y=580 for a 236-px
+        # background, or perfectly equal-spaced sequences) — treating those as
+        # real clicks just wastes captcha refresh budget. A single bad point
+        # invalidates the whole response since point order matters.
+        bg_w, bg_h = bg_image.width, bg_image.height
+        bad = [(x, y) for (x, y) in points if not (0 <= x < bg_w and 0 <= y < bg_h)]
+        if bad:
             logging.info(
-                "LLM solver predicted %s point(s): %s",
+                "LLM solver rejected: %s of %s point(s) out of bg bounds %sx%s: %s. raw_text=%r",
+                len(bad),
                 len(points),
-                points,
+                bg_w,
+                bg_h,
+                bad,
+                text[:200],
             )
+            return []
+        logging.info(
+            "LLM solver predicted %s point(s) in %sx%s bg: %s",
+            len(points),
+            bg_w,
+            bg_h,
+            points,
+        )
         return points
