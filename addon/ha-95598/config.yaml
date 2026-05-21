@@ -1,5 +1,5 @@
 name: "95598 for Home Assistant (laxy fork)"
-version: "0.1.30"
+version: "0.1.31"
 slug: "ha_95598"
 description: "Sync 95598 electricity data to Home Assistant (PID 1 fix + LLM vision captcha solver)"
 url: "https://github.com/laxy-me/ha-95598"
@@ -61,6 +61,7 @@ options:
   llm_provider: "zhipu"
   llm_model: ""
   llm_base_url: ""
+  llm_https_proxy: ""
   # TOU rate override. When tou_peak_rate is set, the addon synthesizes a
   # single-tier all-year config from these four numbers (defaults match
   # peak for households on simple peak/valley plans). This replaces the
@@ -111,6 +112,7 @@ schema:
   llm_provider: list(zhipu|openai|anthropic|custom)?
   llm_model: str?
   llm_base_url: str?
+  llm_https_proxy: str?
   tou_peak_rate: float(0,10)?
   tou_valley_rate: float(0,10)?
   tou_flat_rate: float(0,10)?

@@ -70,6 +70,7 @@ class LLMConfig:
     base_url: str
     model: str
     provider: str = "zhipu"
+    https_proxy: Optional[str] = None
     timeout: float = 30.0
 
 
@@ -81,7 +82,14 @@ def load_llm_config_from_env() -> Optional[LLMConfig]:
     defaults = _PROVIDER_DEFAULTS.get(provider, _PROVIDER_DEFAULTS["zhipu"])
     base_url = (os.getenv("LLM_BASE_URL") or defaults["base_url"]).rstrip("/")
     model = (os.getenv("LLM_MODEL") or defaults["model"]).strip()
-    return LLMConfig(api_key=api_key, base_url=base_url, model=model, provider=provider)
+    https_proxy = (os.getenv("LLM_HTTPS_PROXY") or "").strip() or None
+    return LLMConfig(
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+        provider=provider,
+        https_proxy=https_proxy,
+    )
 
 
 class LLMPointClickSolver:
@@ -148,6 +156,20 @@ class LLMPointClickSolver:
             )
         data = json.dumps(payload).encode("utf-8")
         req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")
+        # Scope the proxy to the LLM call only: selenium / 95598 stays on the
+        # direct egress (where the Tencent-defeating fingerprint is already
+        # accepted), Supervisor stays on the docker network, MQTT stays local.
+        # If the user pointed `llm_https_proxy` at e.g. a Clash HTTP endpoint
+        # on the LAN, we wire it up ad-hoc instead of polluting global env.
+        if self._config.https_proxy:
+            opener = urllib.request.build_opener(
+                urllib.request.ProxyHandler({
+                    "http": self._config.https_proxy,
+                    "https": self._config.https_proxy,
+                })
+            )
+            with opener.open(req, timeout=self._config.timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
         with urllib.request.urlopen(req, timeout=self._config.timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
 

@@ -75,6 +75,11 @@ export LLM_API_KEY="$(json_get llm_api_key "")"
 export LLM_PROVIDER="$(json_get llm_provider zhipu)"
 export LLM_MODEL="$(json_get llm_model "")"
 export LLM_BASE_URL="$(json_get llm_base_url "")"
+# Optional HTTP/HTTPS proxy for LLM calls only (selenium/95598 stay direct).
+# Useful when the LLM endpoint (e.g. Google Gemini) is unreachable from the
+# addon's egress and there's a Clash/HTTP proxy on the LAN. Format:
+# `http://user:pass@host:port` or `http://host:port`.
+export LLM_HTTPS_PROXY="$(json_get llm_https_proxy "")"
 # Ingress port for the small QR HTTP server. Must match config.yaml's
 # ingress_port. The python qr_server reads this env var.
 export INGRESS_PORT=8099
