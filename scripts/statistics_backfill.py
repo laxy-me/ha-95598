@@ -228,6 +228,23 @@ def _build_full_series(
             usage.append((end_dt, round(day_cum_u, 2), round(day_cum_u, 2)))
             charge.append((end_dt, round(day_cum_c, 2), round(day_cum_c, 2)))
         diag["current_month_daily_imported"] = len(dailies)
+        # Pin the current hour in long-term statistics at the same
+        # cumulative we just wrote at "yesterday 23:00". Without this,
+        # the dashboard computes daily(today) = max(today_hours) -
+        # max(yesterday_hours), and the today_hours rows HA's auto-
+        # recorder summarised BEFORE this fetch still hold the
+        # pre-fetch cumulative (= prev_month_cum + last month_usage
+        # value). After backfill writes the post-fetch cumulative at
+        # yesterday 23:00, daily(today) goes negative until the next
+        # auto-summary catches up — up to a 1-hour visible artifact.
+        # Anchoring "now" makes max(today_hours) >= yesterday's value
+        # immediately, so the artifact never appears.
+        now_anchor = datetime.now(TZ).replace(minute=0, second=0, microsecond=0)
+        last_daily_end = datetime.combine(dailies[-1][0], time(23, 0), tzinfo=TZ)
+        if now_anchor > last_daily_end:
+            usage.append((now_anchor, round(day_cum_u, 2), round(day_cum_u, 2)))
+            charge.append((now_anchor, round(day_cum_c, 2), round(day_cum_c, 2)))
+            diag["now_anchor"] = now_anchor.isoformat()
     return usage, charge, diag
 
 
