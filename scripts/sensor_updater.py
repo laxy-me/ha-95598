@@ -300,7 +300,6 @@ class SensorUpdater:
         self.update_last_month_data(user_id, postfix)
 
         logging.info(f"User {user_id} state-refresh task run successfully!")
-        self._mirror_db_to_share()
 
     def update_last_month_data(self, user_id: str, postfix: str) -> None:
         """Publish the most recently completed month's totals as
@@ -343,25 +342,6 @@ class SensorUpdater:
             "Homeassistant sensor %s state updated: %s CNY (period=%s)",
             charge_sensor, summary["charge"], period,
         )
-
-    def _mirror_db_to_share(self) -> None:
-        """Copy fork's SQLite to /share/95598.db so HA Core can read it.
-
-        HA Core mounts /share but not /addon_configs, so it cannot
-        directly read the fork's database. After each successful state
-        refresh we cp it into /share so a HA sql / command_line sensor
-        can expose historical data (last month total, etc).
-        """
-        target = "/share/95598.db"
-        try:
-            source = self._get_db_file()
-            if not source or not os.path.exists(source):
-                return
-            import shutil
-            shutil.copyfile(source, target)
-            logging.info("Mirrored fork SQLite to %s", target)
-        except Exception as exc:
-            logging.warning("Failed to mirror SQLite to %s: %s", target, exc)
 
     def _get_cache_file(self):
         return str(self.cache_store.cache_file)

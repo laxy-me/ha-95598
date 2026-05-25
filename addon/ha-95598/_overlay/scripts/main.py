@@ -61,14 +61,6 @@ def main():
     # ... (Ingress HTTP server is wired up later, after `fetcher` is
     # constructed so its manual-trigger button has something to call.)
 
-    # Background thread that periodically pings 95598 with persisted
-    # cookies — keeps the session alive if 95598 uses sliding TTL.
-    try:
-        from scripts import session_keepalive
-        session_keepalive.start()
-    except Exception as exc:
-        logging.warning("Session keepalive failed to start: %s", exc)
-
     logging.info("The current project version is %s.", config.version)
     logging.info("Configured %s login credential(s).", len(config.credentials))
     current_datetime = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
