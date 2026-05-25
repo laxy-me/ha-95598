@@ -1,5 +1,5 @@
 name: "95598 for Home Assistant (laxy fork)"
-version: "0.1.34"
+version: "0.1.35"
 slug: "ha_95598"
 description: "Sync 95598 electricity data to Home Assistant (PID 1 fix + LLM vision captcha solver)"
 url: "https://github.com/laxy-me/ha-95598"

@@ -31,7 +31,14 @@ class SqliteDB:
         try:
             self.user_id = self._normalize_user_id(user_id)
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self.connect = sqlite3.connect(self.db_path, timeout=30)
+            # check_same_thread=False: manual Ingress trigger runs the
+            # fetch in a worker thread while sensor publish/republish
+            # may touch the same connection from another thread.
+            # _run_task_lock serializes all fetch work, so cross-thread
+            # use is safe (no concurrent writers).
+            self.connect = sqlite3.connect(
+                self.db_path, timeout=30, check_same_thread=False,
+            )
             self._configure_connection()
             self._create_schema()
             logging.info("SQLite database ready at %s for user %s", self.db_path, self.user_id)
