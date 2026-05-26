@@ -260,6 +260,26 @@ class SensorUpdater:
         peak_usage: float = None,
         tip_usage: float = None,
     ):
+        # last_daily_date/usage as passed in come from DOM tr[1] of
+        # the "日用电量" table, which can lag a day when 95598 hasn't
+        # yet surfaced yesterday in the default view while the
+        # range-query TOU backfill has already written it. Prefer
+        # DB truth (most recent row with total_usage > 0) so the
+        # last_electricity_(usage|charge) sensors stay in sync with
+        # daily_electricity_history (which reads DB directly).
+        db = self._ensure_db(user_id)
+        if db is not None:
+            try:
+                latest = db.get_latest_completed_daily()
+            except Exception as exc:
+                logging.debug("get_latest_completed_daily failed: %s", exc)
+                latest = None
+            if latest is not None:
+                last_daily_date = latest["date"]
+                last_daily_usage = latest["usage"]
+                if latest.get("charge") is not None:
+                    last_daily_charge = latest["charge"]
+
         self._save_to_cache(
             user_id,
             balance,

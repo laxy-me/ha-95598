@@ -462,6 +462,40 @@ class SqliteDB:
         finally:
             cursor.close()
 
+    def get_latest_completed_daily(self) -> dict[str, Any] | None:
+        """Most recent daily_usage row whose total_usage is non-zero.
+
+        Skips the placeholder rows 95598 returns when a day hasn't
+        been finalized yet (date present, all usages 0). Used to
+        drive last_electricity_(usage|charge) sensors so they
+        track DB truth instead of DOM tr[1] which can lag.
+        """
+        if self.connect is None or self.user_id is None:
+            logging.error("Database connection is not established.")
+            return None
+        cursor = self.connect.cursor()
+        try:
+            cursor.execute(
+                f"""
+                SELECT date, total_usage, COALESCE(total_charge, 0)
+                FROM {self.DAILY_TABLE}
+                WHERE user_id = ? AND total_usage > 0
+                ORDER BY date DESC
+                LIMIT 1
+                """,
+                (self.user_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "date": row[0],
+                "usage": self._safe_float(row[1], default=0.0),
+                "charge": self._safe_float(row[2], default=0.0),
+            }
+        finally:
+            cursor.close()
+
     def sync_yearly_from_monthly(self, year: str) -> bool:
         if self.connect is None or self.user_id is None:
             logging.error("Database connection is not established.")

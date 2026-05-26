@@ -488,24 +488,39 @@ class LoginManager:
                     continue
 
                 logging.error("qrcode login error[%s]", error)
-                if "二维码失效" in error and refresh_index < self.qr_refresh_limit:
-                    logging.info(
-                        "QR code expired, refreshing QR code and retrying [%s/%s].",
-                        refresh_index + 1,
+                if "二维码失效" in error:
+                    if refresh_index < self.qr_refresh_limit:
+                        logging.info(
+                            "QR code expired, refreshing QR code and retrying [%s/%s].",
+                            refresh_index + 1,
+                            self.qr_refresh_limit,
+                        )
+                        try:
+                            driver.execute_script("arguments[0].click();", qr_element)
+                            time.sleep(1)
+                        except Exception as exc:
+                            logging.warning("Failed to click expired QR code for refresh: %s", exc)
+                        should_refresh = True
+                        break
+                    logging.warning(
+                        "QR code expired and refresh budget exhausted (limit=%s); "
+                        "user did not scan in time.",
                         self.qr_refresh_limit,
                     )
-                    try:
-                        driver.execute_script("arguments[0].click();", qr_element)
-                        time.sleep(1)
-                    except Exception as exc:
-                        logging.warning("Failed to click expired QR code for refresh: %s", exc)
-                    should_refresh = True
-                    break
+                    return False
 
+                # Non-QR-expired error path. QR login flow itself does
+                # not require a Tencent captcha — if the widget is
+                # visible here it's a stale leftover DOM from the
+                # earlier password-login attempt, not a real block.
+                # Capture for forensics but don't conflate with the
+                # actual error reported by 95598.
                 if self.tencent_captcha.is_captcha_actually_displayed(driver):
                     captcha_info = self.tencent_captcha.get_info(driver)
                     logging.info(
-                        "Tencent captcha still visible during QR fallback, mode=%s, prompt=%s",
+                        "Stale Tencent captcha DOM visible during QR login error "
+                        "(QR flow does not require captcha; likely residual from "
+                        "password-login phase), mode=%s, prompt=%s",
                         captcha_info.get("mode"),
                         captcha_info.get("prompt", ""),
                     )
@@ -534,7 +549,9 @@ class LoginManager:
         if self.tencent_captcha.is_captcha_actually_displayed(driver):
             captcha_info = self.tencent_captcha.get_info(driver)
             logging.info(
-                "Tencent captcha still visible after QR timeout, mode=%s, prompt=%s",
+                "Stale Tencent captcha DOM visible after QR timeout "
+                "(QR flow does not require captcha; likely residual from "
+                "password-login phase), mode=%s, prompt=%s",
                 captcha_info.get("mode"),
                 captcha_info.get("prompt", ""),
             )
