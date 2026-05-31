@@ -1,4 +1,5 @@
 import logging
+import os
 import random
 import threading
 import time
@@ -17,6 +18,23 @@ DATA_DIR = Path(__file__).resolve().parents[2] / "data"
 # the manual Ingress trigger so we never start a second selenium driver
 # while one is mid-login.
 _run_task_lock = threading.Lock()
+
+# --- Settlement retry -------------------------------------------------------
+# 95598 daily usage is D+1 and the settlement moment drifts (observed as late
+# as ~11:00 the next day). The default job_times schedule mostly fires in the
+# morning, so if yesterday settles after the morning run, the regular schedule
+# won't pick it up until tomorrow. After each fetch, if the DB's settled daily
+# frontier is still behind yesterday, arm a one-shot retry later today; it
+# self-cancels and stops re-arming once caught up or past the cutoff hour.
+SETTLEMENT_RETRY_TAG = "settlement-retry"
+SETTLEMENT_RETRY_DELAY_MINUTES = int(os.getenv("SETTLEMENT_RETRY_DELAY_MINUTES", "90"))
+SETTLEMENT_RETRY_CUTOFF_HOUR = int(os.getenv("SETTLEMENT_RETRY_CUTOFF_HOUR", "22"))
+# schedule is not thread-safe; the manual Ingress trigger runs in a daemon
+# thread and also reaches the re-arm path, so serialize schedule mutations.
+# RLock (not Lock): run_pending() holds this while executing a due job, and
+# that job's run_task re-enters via _maybe_schedule_settlement_retry on the
+# same thread — a plain Lock would self-deadlock there.
+_schedule_lock = threading.RLock()
 
 
 def schedule_jobs(fetcher, updater, job_start_time: str, job_times: int, retry_times_limit: int, republish_interval_minutes: int) -> None:
@@ -62,6 +80,9 @@ def run_task(data_fetcher, retry_times_limit: int):
                         )
                 except Exception as exc:
                     logging.warning("Post-fetch statistics backfill raised: %s", exc)
+                # If yesterday still hasn't settled, arm a delayed retry so it
+                # lands today instead of waiting for tomorrow's morning job.
+                _maybe_schedule_settlement_retry(data_fetcher, retry_times_limit)
                 return
             except Exception as exc:
                 logging.error(
@@ -77,6 +98,41 @@ def run_task(data_fetcher, retry_times_limit: int):
             state_registry.set_state(state_registry.IDLE)
         auto_replay_once(DATA_DIR)
         _run_task_lock.release()
+
+
+def _maybe_schedule_settlement_retry(data_fetcher, retry_times_limit: int) -> None:
+    """Arm a one-shot retry later today if the last fetch left us behind on
+    the daily series (yesterday not settled yet) and we're before the cutoff
+    hour. Idempotent: clears any pending retry before arming a fresh one."""
+    if not getattr(data_fetcher, "behind_on_daily", False):
+        with _schedule_lock:
+            schedule.clear(SETTLEMENT_RETRY_TAG)
+        return
+    if datetime.now().hour >= SETTLEMENT_RETRY_CUTOFF_HOUR:
+        logging.info(
+            "Daily series still behind but past cutoff hour %s; leaving it for tomorrow's job.",
+            SETTLEMENT_RETRY_CUTOFF_HOUR,
+        )
+        with _schedule_lock:
+            schedule.clear(SETTLEMENT_RETRY_TAG)
+        return
+    with _schedule_lock:
+        schedule.clear(SETTLEMENT_RETRY_TAG)
+        schedule.every(SETTLEMENT_RETRY_DELAY_MINUTES).minutes.do(
+            _run_settlement_retry, data_fetcher, retry_times_limit
+        ).tag(SETTLEMENT_RETRY_TAG)
+    logging.info(
+        "Daily series behind — armed a settlement retry in %s minutes.",
+        SETTLEMENT_RETRY_DELAY_MINUTES,
+    )
+
+
+def _run_settlement_retry(data_fetcher, retry_times_limit: int):
+    """One-shot retry body. run_task re-arms the next retry (or clears it once
+    caught up) via _maybe_schedule_settlement_retry, so this cancels itself."""
+    logging.info("Settlement retry firing — re-fetching to pick up late-settled daily data.")
+    run_task(data_fetcher, retry_times_limit)
+    return schedule.CancelJob
 
 
 def trigger_manual_fetch(data_fetcher, retry_times_limit: int) -> bool:
@@ -97,5 +153,8 @@ def trigger_manual_fetch(data_fetcher, retry_times_limit: int) -> bool:
 
 def run_forever() -> None:
     while True:
-        schedule.run_pending()
+        # Guard against a daemon-thread fetch mutating schedule.jobs (arming
+        # or clearing a settlement retry) while we iterate it here.
+        with _schedule_lock:
+            schedule.run_pending()
         time.sleep(1)

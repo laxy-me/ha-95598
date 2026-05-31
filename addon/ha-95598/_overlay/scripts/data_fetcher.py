@@ -2,7 +2,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.wait import WebDriverWait
@@ -88,6 +88,10 @@ class DataFetcher:
         )
         self._init_db()
         self.data_persister = DataPersister(self.db, self.tou_price_resolver)
+        # Set True at the end of a fetch run when the DB's settled daily
+        # frontier still hasn't reached yesterday — drives the scheduler's
+        # settlement retry (95598 daily is D+1 and can settle late in the day).
+        self.behind_on_daily = False
 
     def _init_db(self):
         self.db_type = os.getenv("DB_TYPE", "sqlite").lower()
@@ -118,6 +122,39 @@ class DataFetcher:
 
     def _is_progress_current(self, progress: dict) -> bool:
         return (progress or {}).get("fetch_date") == self._progress_date()
+
+    def _expected_latest_daily_date(self) -> str:
+        """The most recent day that *should* be settled by now. 95598 daily
+        usage is D+1, so at any time today we expect yesterday to exist."""
+        return (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    def _daily_series_behind(self, user_id) -> bool:
+        """True if the DB's latest settled daily row is older than yesterday.
+
+        get_latest_completed_daily filters total_usage>0, so its frontier
+        only advances on real settlement. Comparing that frontier against
+        yesterday covers both 'yesterday's row absent entirely' and
+        'yesterday present but a 0 placeholder' — a plain is-it-zero check
+        would miss the absent case, which is the common morning state.
+        Opens its own short-lived connection; the persist flow reconnects.
+        """
+        if self.db is None:
+            return False
+        try:
+            if not self.db.connect_user_db(user_id):
+                return False
+            latest = self.db.get_latest_completed_daily()
+        except Exception as exc:
+            logging.warning("Could not check daily-series freshness for %s: %s", user_id, exc)
+            return False
+        finally:
+            try:
+                self.db.close_connect()
+            except Exception:
+                pass
+        if not latest or not latest.get("date"):
+            return True
+        return str(latest["date"]) < self._expected_latest_daily_date()
 
     def _has_completed_stage(self, progress: dict, stage: str) -> bool:
         stage_order = {
@@ -164,6 +201,7 @@ class DataFetcher:
 
         """main logic here"""
 
+        self.behind_on_daily = False
         driver = self._get_webdriver()
         ErrorWatcher.instance().set_driver(driver)
         updater = self.updater or SensorUpdater()
@@ -577,6 +615,20 @@ class DataFetcher:
             updater.update_progress_stage(user_id, "none", fetch_date=self._progress_date())
             progress = updater.get_progress(user_id)
             cached = updater.get_cached_user_data(user_id)
+        elif self._has_completed_stage(progress, "daily") and self._daily_series_behind(user_id):
+            # Settlement-aware re-arm: a morning job can complete the whole
+            # chain before 95598 settles yesterday's daily usage (D+1, often
+            # late morning). That marks today's progress "complete", so later
+            # jobs would skip the daily fetch and yesterday wouldn't land until
+            # tomorrow. Roll progress back to "monthly" so the daily->persist
+            # chain re-runs this pass (yearly/monthly stay done — we don't
+            # re-read those slower pages).
+            logging.info(
+                "Daily series for %s is behind %s; re-arming daily fetch despite completed progress.",
+                user_id, self._expected_latest_daily_date(),
+            )
+            updater.update_progress_stage(user_id, "monthly", fetch_date=self._progress_date())
+            progress = updater.get_progress(user_id)
 
         balance = cached.get("balance")
         if self._has_completed_stage(progress, "balance"):
@@ -776,6 +828,11 @@ class DataFetcher:
             month_usage = month_usage[-1]
         else:
             month_usage = None
+
+        # Record post-fetch settlement state so the scheduler can arm a
+        # delayed retry when yesterday still hasn't settled this run.
+        if self._daily_series_behind(user_id):
+            self.behind_on_daily = True
 
         return (
             balance,
