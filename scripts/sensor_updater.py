@@ -592,6 +592,12 @@ class SensorUpdater:
             return None
         return db.get_current_month_daily_summary()
 
+    def _get_latest_month_summary(self, user_id: str):
+        db = self._ensure_db(user_id)
+        if db is None:
+            return None
+        return db.get_latest_month_summary()
+
     def _get_current_year_daily_summary(self, user_id: str):
         db = self._ensure_db(user_id)
         if db is None:
@@ -676,10 +682,16 @@ class SensorUpdater:
             if usage
             else MONTH_CHARGE_SENSOR_NAME + postfix
         )
-        current_month_summary = self._get_current_month_daily_summary(user_id)
-        if current_month_summary is not None:
-            sensorState = current_month_summary["usage" if usage else "charge"]
-            period = current_month_summary["period"]
+        # The scraped monthly table lags 1-2 months (its last row is still
+        # April here = 426), so the passed-in sensorState (that last row) is
+        # stale. Use the newest month actually in monthly_usage instead —
+        # daily-synced rows keep the current billing month's row up to date
+        # (now = May 520.86; rolls to June automatically once June daily rows
+        # land). Falls back to the passed-in value if the table is empty.
+        latest_month_summary = self._get_latest_month_summary(user_id)
+        if latest_month_summary is not None:
+            sensorState = latest_month_summary["usage" if usage else "charge"]
+            period = latest_month_summary["month"]
         else:
             period = datetime.now().strftime("%Y-%m")
         # Resets at the start of each month. state_class=total +
@@ -696,7 +708,7 @@ class SensorUpdater:
             state_class="total",
             extra_attributes={"period": period, "last_reset": last_reset},
         )
-        if current_month_summary is not None:
+        if latest_month_summary is not None:
             self.save_partial_data(
                 user_id,
                 **({"month_usage": sensorState} if usage else {"month_charge": sensorState}),
@@ -709,6 +721,18 @@ class SensorUpdater:
             if usage
             else YEARLY_CHARGE_SENSOR_NAME + postfix
         )
+        # The scraped yearly figure (totalEleNum) lags ~1 month like the
+        # monthly chart — it omits the newest month (here 1678 = Jan-Apr,
+        # missing May 521). Prefer the DB yearly_usage table, which is SUM'd
+        # from monthly_usage (daily-synced, includes the current month =
+        # 2198.86). Falls back to the passed-in scraped value if absent.
+        db = self._ensure_db(user_id)
+        if db is not None:
+            year_row = db.get_period_row("yearly_usage", "year", str(datetime.now().year))
+            if year_row is not None:
+                value = year_row["total_usage" if usage else "total_charge"]
+                if value is not None:
+                    sensorState = round(value, 2)
         last_reset = self._period_to_iso(str(datetime.now().year))
         self._publish_sensor_state(
             sensorName,

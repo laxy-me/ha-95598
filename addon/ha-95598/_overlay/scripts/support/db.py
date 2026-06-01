@@ -391,6 +391,42 @@ class SqliteDB:
         finally:
             cursor.close()
 
+    def get_latest_month_summary(self) -> dict[str, Any] | None:
+        """Return the newest month present in monthly_usage, INCLUDING the
+        current/ongoing billing month.
+
+        The official 95598 monthly table lags 1-2 months (its last row is
+        still April here), but daily-synced rows keep the newest month's row
+        current (May = 520.86). The current-month sensor uses this so it
+        reflects the latest month we actually have data for, instead of the
+        stale last row of the scraped monthly table.
+        """
+        if self.connect is None or self.user_id is None:
+            logging.error("Database connection is not established.")
+            return None
+        cursor = self.connect.cursor()
+        try:
+            cursor.execute(
+                """
+                SELECT month, total_usage, COALESCE(total_charge, 0)
+                FROM monthly_usage
+                WHERE user_id = ?
+                ORDER BY month DESC
+                LIMIT 1
+                """,
+                (self.user_id,),
+            )
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            return {
+                "month": row[0],
+                "usage": round(self._safe_float(row[1], default=0.0), 2),
+                "charge": round(self._safe_float(row[2], default=0.0), 2),
+            }
+        finally:
+            cursor.close()
+
     def get_total_monthly_summary(self) -> dict[str, Optional[float]] | None:
         if self.connect is None or self.user_id is None:
             logging.error("Database connection is not established.")
